@@ -1,0 +1,102 @@
+{
+  "negative": {
+    "fog_density": 0.15,
+    "image_density_range": 1.55,
+    "exposure_knee": 0.25,
+    "shoulder_range": 0.85,
+    "development_sensitivity": [1.0, 0.82, 0.62],
+    "layers": [
+      [[2.20, 0.010, 0.76], [4.35, 0.017, 0.24]],
+      [[2.00, 0.009, 0.80], [3.95, 0.015, 0.20]],
+      [[2.35, 0.011, 0.76], [4.55, 0.018, 0.24]]
+    ]
+  },
+  "negative_stocks": [
+    {
+      "id": "portra-400",
+      "name": "Kodak Portra 400",
+      "fog_density": 0.15,
+      "image_density_range": 1.52,
+      "exposure_knee": 0.20,
+      "shoulder_range": 0.95,
+      "saturation": 0.96,
+      "exposure_balance_ev": [0.03, 0, -0.03],
+      "development_sensitivity": [0.92, 0.82, 0.68],
+      "layers": [
+        [[2.00, 0.01451, 0.81], [4.00, 0.02257, 0.19]],
+        [[1.90, 0.01290, 0.83], [3.80, 0.02096, 0.17]],
+        [[2.15, 0.01612, 0.80], [4.20, 0.02418, 0.20]]
+      ]
+    },
+    {
+      "id": "gold-200",
+      "name": "Kodak Gold 200",
+      "fog_density": 0.15,
+      "image_density_range": 1.55,
+      "exposure_knee": 0.28,
+      "shoulder_range": 0.74,
+      "saturation": 1.12,
+      "exposure_balance_ev": [0.09, 0.015, -0.11],
+      "development_sensitivity": [1.0, 0.83, 0.65],
+      "layers": [
+        [[2.05, 0.01325, 0.77], [4.10, 0.02120, 0.23]],
+        [[1.90, 0.02813, 0.81], [3.80, 0.04688, 0.19]],
+        [[2.25, 0.06735, 0.75], [4.45, 0.10409, 0.25]]
+      ]
+    },
+    {
+      "id": "ektar-100",
+      "name": "Kodak Ektar 100",
+      "fog_density": 0.15,
+      "image_density_range": 1.56,
+      "exposure_knee": 0.32,
+      "shoulder_range": 0.66,
+      "saturation": 1.22,
+      "exposure_balance_ev": [0.01, 0, 0.02],
+      "development_sensitivity": [0.95, 0.86, 0.72],
+      "layers": [
+        [[1.45, 0.01006, 0.88], [2.80, 0.01581, 0.12]],
+        [[1.35, 0.01243, 0.90], [2.60, 0.01775, 0.10]],
+        [[1.55, 0.02810, 0.86], [3.05, 0.04215, 0.14]]
+      ]
+    },
+    {
+      "id": "vision3-500t",
+      "name": "Kodak Vision3 500T",
+      "fog_density": 0.15,
+      "image_density_range": 1.48,
+      "exposure_knee": 0.17,
+      "shoulder_range": 1.18,
+      "saturation": 0.90,
+      "exposure_balance_ev": [-0.07, 0, 0.09],
+      "development_sensitivity": [0.95, 0.83, 0.62],
+      "layers": [
+        [[2.20, 0.00139, 0.80], [4.35, 0.00232, 0.20]],
+        [[2.00, 0.00222, 0.84], [3.90, 0.00389, 0.16]],
+        [[2.50, 0.00968, 0.75], [4.85, 0.01452, 0.25]]
+      ]
+    }
+  ],
+  "paper": {
+    "fog_density": 0.035,
+    "image_density_range": 2.20,
+    "exposure_midpoint": 0.23,
+    "contrast": 1.65,
+    "layers": [
+      [[1.35, 0.009, 0.83], [2.80, 0.015, 0.17]],
+      [[1.25, 0.009, 0.85], [2.60, 0.014, 0.15]],
+      [[1.45, 0.010, 0.82], [3.00, 0.016, 0.18]]
+    ]
+  },
+  "film": {
+    "fog_density": 0.025,
+    "image_density_range": 3.00,
+    "exposure_midpoint": 0.28,
+    "contrast": 2.0,
+    "layers": [
+      [[1.20, 0.009, 0.84], [2.45, 0.014, 0.16]],
+      [[1.10, 0.008, 0.86], [2.30, 0.013, 0.14]],
+      [[1.30, 0.010, 0.82], [2.65, 0.015, 0.18]]
+    ]
+  }
+}

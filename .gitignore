@@ -1,0 +1,8 @@
+/target/
+/.gradle/
+/local.properties
+/local/
+/**/build/
+__pycache__/
+*.py[cod]
+.DS_Store
