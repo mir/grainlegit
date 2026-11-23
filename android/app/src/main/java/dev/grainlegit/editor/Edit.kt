@@ -3,6 +3,8 @@ package dev.grainlegit.editor
 import androidx.compose.runtime.saveable.Saver
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.ln
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 internal enum class Tool(
@@ -12,6 +14,7 @@ internal enum class Tool(
     val initial: Float = 0f,
     val steps: Int = 40,
     private val unit: String = "",
+    private val logarithmic: Boolean = false,
 ) {
     Exposure("Exposure", -3f, 3f, steps = 60, unit = " EV"),
     Brightness("Brightness"), Highlights("Highlights"), Shadows("Shadows"),
@@ -20,8 +23,14 @@ internal enum class Tool(
     WhiteBalance("WB picker"), Sharpen("Sharpen", 0f, 2f),
     CameraExposure("Negative exposure", -2f, 2f, unit = " EV"),
     Grain("Grain amount", 0f, 3f, 1f, 60, "×"),
-    GrainSize("Grain size", 0.1f, 3f, 1f, 29, "×"),
+    GrainSize("Grain size", 0.1f, 10f, 1f, 14, "×", logarithmic = true),
     GrainColour("Grain colour", 0f, 1f, 0.25f, 100),
+    GrainLoad("Dye per cloud", 0.1f, 8f, 1f, 158, "×"),
+    CoarseFraction("Coarse fraction", 0f, 1f, 0.24f, 100),
+    RedCloudSize("Red cloud size", 0.25f, 4f, 1f, 14, "×", logarithmic = true),
+    GreenCloudSize("Green cloud size", 0.25f, 4f, 1f, 14, "×", logarithmic = true),
+    BlueCloudSize("Blue cloud size", 0.25f, 4f, 1f, 14, "×", logarithmic = true),
+    Development("Development", -2f, 2f, steps = 80),
     PrintExposure("Print exposure", -4f, 4f, steps = 80, unit = " EV"),
     Enlargement("Enlargement", 1f, 30f, 6f, 58, "×"),
     EnlargerBlur("Enlarger blur", 0f, 150f, steps = 150, unit = " µm"),
@@ -37,8 +46,21 @@ internal enum class Tool(
     Stock("Stock"), Format("Format"), Medium("Medium");
 
     fun display(value: Float): String = when {
+        logarithmic -> "${"%.2f".format(value)}$unit"
+        this == Development -> "%.1f".format(value)
         unit.isNotEmpty() -> "${"%.1f".format(value)}$unit"
         else -> "${(value * 100).roundToInt()}%"
+    }
+
+    fun rulerPosition(value: Float): Float {
+        val bounded = value.coerceIn(min, max)
+        return if (logarithmic) ln(bounded / min) / ln(max / min) else (bounded - min) / (max - min)
+    }
+
+    fun rulerValue(position: Float): Float {
+        val stop = (position.coerceIn(0f, 1f) * steps).roundToInt()
+        val fraction = stop.toFloat() / steps
+        return if (logarithmic) min * (max / min).pow(fraction) else min + (max - min) * fraction
     }
 }
 
@@ -57,6 +79,7 @@ internal data class Edit(
     val balance: List<Float> = listOf(1f, 1f, 1f),
     val curves: List<List<Float>> = List(4) { neutralCurve },
     val geometry: Geometry = Geometry(),
+    val useCoarseProfile: Boolean = true,
 ) {
     operator fun get(tool: Tool) = values[tool] ?: tool.initial
 
@@ -72,9 +95,13 @@ internal data class Edit(
             .put("grain", get(Tool.Grain).toDouble())
             .put("grain_size", get(Tool.GrainSize).toDouble())
             .put("grain_colour", get(Tool.GrainColour).toDouble())
+            .put("grain_load", get(Tool.GrainLoad).toDouble())
+            .put("layer_size", vector(Tool.RedCloudSize, Tool.GreenCloudSize, Tool.BlueCloudSize))
+            .put("development", get(Tool.Development).toDouble())
             .put("print_medium", medium)
             .put("scan_blur", get(Tool.ScanBlur).toDouble())
             .put("scan_aperture", get(Tool.Aperture).toDouble())
+        if (!useCoarseProfile) film.put("coarse_fraction", get(Tool.CoarseFraction).toDouble())
         if (medium != 0) {
             film.put("print_exposure", get(Tool.PrintExposure).toDouble())
                 .put("enlargement", get(Tool.Enlargement).toDouble())
@@ -98,7 +125,7 @@ internal data class Edit(
             .put("format", format).put("medium", medium)
             .put("balance", JSONArray(balance.map(Float::toDouble)))
             .put("curves", JSONArray(curves.map { curve -> JSONArray(curve.map(Float::toDouble)) }))
-            .put("geometry", geometry.encode()).toString()
+            .put("geometry", geometry.encode()).put("useCoarseProfile", useCoarseProfile).toString()
     }
 
     companion object {
@@ -116,6 +143,7 @@ internal data class Edit(
                 balance = List(3) { json.getJSONArray("balance").getDouble(it).toFloat() },
                 curves = List(4) { channel -> List(5) { curves.getJSONArray(channel).getDouble(it).toFloat() } },
                 geometry = Geometry.decode(json.getJSONObject("geometry")),
+                useCoarseProfile = json.optBoolean("useCoarseProfile", true),
             )
         }
     }

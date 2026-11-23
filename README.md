@@ -20,10 +20,10 @@ Grainlegit brings Filmgrain’s colour-negative and optical-print simulation to 
 | Area | In the Android app |
 | --- | --- |
 | Recent edits | Open JPEG and HEIF photos through the Android photo picker. Reopen recent photos with their saved settings and grain seeds. |
-| Preview and Adjust | **Fit**, **100%**, pinch and pan, hold-to-compare, undo and redo, and Light/Colour/Detail tools. The active adjustment stays visible while the remaining tools scroll. Curves and white balance preview changes before **Apply**. |
-| Crop | Resize with the corner handles or drag to reposition. Choose an aspect ratio and adjust straightening, perspective, rotation, flips, or **Constrain**. The photo outside the crop is dimmed. |
-| Negative | Choose the stock and one of six formats in dedicated sheets. Adjust camera exposure, grain amount, grain size, and grain colour independently. |
-| Optical Print | Choose Direct, Paper, or Print film. The **Settings** sheet contains enlargement, enlarger blur, print grain, filtration, and scan optics. Direct scan exposes scan optics. |
+| Preview and Adjust | **Fit**, **100%**, pinch and pan, hold-to-compare, and undo and redo. Crop and all adjustments share one horizontal strip. Curves and white balance preview changes before **Apply**. |
+| Crop | Resize with the corner handles or drag to reposition. Choose an aspect ratio and adjust straightening, perspective, rotation, flips, or **Constrain**. The grid and dimmed mask update independently of the cached photo, and the film renderer updates after **Apply**. |
+| Grain | Choose a stock and format. The tool strip contains exposure, grain amount, size, colour, dye per cloud, coarse fraction, RGB cloud sizes, and development. Coarse fraction can use the stock profile or a manual value. |
+| Print | Choose Direct, Paper, or Print film. The **Settings** sheet contains enlargement, enlarger blur, print grain, filtration, and scan optics. Direct scan exposes scan optics. |
 | Export | Choose **Save copy** to start a full-resolution sRGB JPEG save with progress and cancellation. **Photo saved** confirms the export. |
 
 ### Remaining implementation plan milestones

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -52,29 +53,32 @@ import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
-import kotlin.math.round
 import kotlin.math.roundToInt
 
 internal enum class Panel(val title: String, val defaultTool: Tool) {
-    Adjust("Adjust", Tool.Exposure), Negative("Negative", Tool.CameraExposure),
-    Print("Optical Print", Tool.PrintExposure),
+    Adjust("Adjust", Tool.Exposure), Negative("Grain", Tool.CameraExposure),
+    Print("Print", Tool.PrintExposure),
 }
 
-internal enum class ToolGroup(val tools: List<Tool>) {
-    Light(listOf(Tool.Exposure, Tool.Brightness, Tool.Highlights, Tool.Shadows, Tool.Contrast, Tool.Whites, Tool.Blacks, Tool.Curves)),
-    Colour(listOf(Tool.Vibrance, Tool.WhiteBalance, Tool.Temperature, Tool.Tint, Tool.Saturation)),
-    Detail(listOf(Tool.Sharpen)),
-}
+// Retained for activity state saved by Android 0.2.
+internal enum class ToolGroup { Light, Colour, Detail }
 
-internal enum class Sheet { Stock, Format, Groups, Ratio, PrintSettings, Export, Saved }
+internal enum class Sheet { Stock, Format, Ratio, PrintSettings, Export, Saved }
 
-private val negativeTools = listOf(Tool.CameraExposure, Tool.Grain, Tool.GrainSize, Tool.GrainColour)
+private val adjustmentTools = listOf(
+    Tool.Exposure, Tool.Brightness, Tool.Highlights, Tool.Shadows, Tool.Contrast, Tool.Whites, Tool.Blacks, Tool.Curves,
+    Tool.Vibrance, Tool.WhiteBalance, Tool.Temperature, Tool.Tint, Tool.Saturation, Tool.Sharpen,
+)
+private val grainTools = listOf(
+    Tool.CameraExposure, Tool.Grain, Tool.GrainSize, Tool.GrainColour, Tool.GrainLoad, Tool.CoarseFraction,
+    Tool.RedCloudSize, Tool.GreenCloudSize, Tool.BlueCloudSize, Tool.Development,
+)
 private val opticalTools = listOf(Tool.Enlargement, Tool.EnlargerBlur, Tool.PrintGrain, Tool.Cyan, Tool.Magenta, Tool.Yellow)
 private val scanTools = listOf(Tool.ScanBlur, Tool.Aperture)
 
 @Composable
 internal fun EditControls(
-    panel: Panel, setPanel: (Panel) -> Unit, group: ToolGroup, tool: Tool, edit: Edit,
+    panel: Panel, setPanel: (Panel) -> Unit, tool: Tool, edit: Edit,
     selectTool: (Tool) -> Unit, onCrop: () -> Unit, showSheet: (Sheet) -> Unit,
     change: (Edit) -> Unit, start: () -> Unit, finish: () -> Unit, commit: (Edit) -> Unit,
 ) {
@@ -86,19 +90,35 @@ internal fun EditControls(
                 contentAlignment = Alignment.CenterStart,
             ) { Text(tool.title) }
         } else {
-            Ruler(tool, edit[tool], panel != Panel.Print || edit.medium != 0,
+            val coarse = tool == Tool.CoarseFraction
+            val usingStockMix = coarse && edit.useCoarseProfile
+            val disabledHint = when {
+                usingStockMix -> "Using the stock’s fine and coarse mix."
+                panel == Panel.Print && edit.medium == 0 -> "Choose Paper or Print film."
+                else -> null
+            }
+            Ruler(tool, edit[tool], disabledHint == null,
                 start, { change(edit.with(tool, it)) }, finish,
-                disabledHint = if (panel == Panel.Print && edit.medium == 0) "Choose Paper or Print film." else null)
+                disabledHint = disabledHint,
+                headerOption = if (coarse) { {
+                    Text(
+                        "Use stock profile", color = if (usingStockMix) accent else muted,
+                        modifier = Modifier.background(if (usingStockMix) selectedColor else controlColor, RoundedCornerShape(6.dp))
+                            .toggleable(usingStockMix, role = Role.Switch) { commit(edit.copy(useCoarseProfile = it)) }
+                            .padding(horizontal = 8.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                } } else null)
         }
         when (panel) {
             Panel.Adjust -> Row(
-                Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp),
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 EditorChip("Crop", onClick = onCrop)
-                EditorChip(group.name, chevron = true, onClick = { showSheet(Sheet.Groups) })
-                EditorChip(tool.title, selected = true, onClick = { selectTool(tool) })
-                ToolStrip(group.tools.filter { it != tool }, tool, selectTool, Modifier.weight(1f))
+                adjustmentTools.forEach { entry ->
+                    EditorChip(entry.title, selected = entry == tool, onClick = { selectTool(entry) })
+                }
             }
             Panel.Negative -> Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -107,7 +127,7 @@ internal fun EditControls(
                 val name = stockNames[stockIds.indexOf(edit.stockId).coerceAtLeast(0)]
                 EditorChip(name, chevron = true, onClick = { showSheet(Sheet.Stock) })
                 EditorChip(formatNames[edit.format], chevron = true, onClick = { showSheet(Sheet.Format) })
-                negativeTools.forEach { entry ->
+                grainTools.forEach { entry ->
                     EditorChip(entry.chipTitle(), selected = entry == tool, onClick = { selectTool(entry) })
                 }
             }
@@ -140,8 +160,11 @@ internal fun EditControls(
 
 private fun Tool.chipTitle() = when (this) {
     Tool.CameraExposure -> "Exposure"
-    Tool.Grain -> "Grain"
+    Tool.Grain -> "Amount"
     Tool.GrainSize -> "Size"
+    Tool.RedCloudSize -> "Red size"
+    Tool.GreenCloudSize -> "Green size"
+    Tool.BlueCloudSize -> "Blue size"
     else -> title
 }
 
@@ -317,16 +340,17 @@ internal fun CompareControl(comparing: Boolean, change: (Boolean) -> Unit) {
 internal fun Ruler(
     tool: Tool, amount: Float, enabled: Boolean, start: () -> Unit, change: (Float) -> Unit, finish: () -> Unit,
     label: String = tool.title, disabledHint: String? = null,
+    headerOption: (@Composable () -> Unit)? = null,
 ) {
     val latestChange by rememberUpdatedState(change)
     val latestStart by rememberUpdatedState(start)
     val latestFinish by rememberUpdatedState(finish)
-    val range = tool.max - tool.min
     Column(Modifier.fillMaxWidth().padding(top = 5.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, color = ink, style = MaterialTheme.typography.bodyMedium)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, modifier = Modifier.weight(1f), color = ink, style = MaterialTheme.typography.bodyMedium)
+            headerOption?.invoke()
             Text(if (enabled) tool.display(amount) else "—", color = if (enabled) accent else muted,
-                style = MaterialTheme.typography.labelLarge)
+                modifier = Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelLarge)
         }
         if (disabledHint != null) {
             Box(Modifier.height(36.dp), contentAlignment = Alignment.CenterStart) {
@@ -348,7 +372,7 @@ internal fun Ruler(
             fun update(x: Float) {
                 val inset = 2.dp.toPx()
                 val fraction = ((x - inset) / (size.width - 2 * inset)).coerceIn(0f, 1f)
-                latestChange(tool.min + range * round(fraction * tool.steps) / tool.steps)
+                latestChange(tool.rulerValue(fraction))
             }
             awaitEachGesture {
                 val down = awaitFirstDown()
@@ -382,7 +406,7 @@ internal fun Ruler(
                 val half = if (tick % 7 == 0) 5.dp.toPx() else 2.dp.toPx()
                 drawLine(dividerColor, Offset(x, center.y - half), Offset(x, center.y + half), 2.dp.toPx(), StrokeCap.Round)
             }
-            val x = inset + width * (amount - tool.min) / range
+            val x = inset + width * tool.rulerPosition(amount)
             drawLine(accent, Offset(x, center.y - 8.dp.toPx()), Offset(x, center.y + 8.dp.toPx()),
                 4.dp.toPx(), StrokeCap.Round)
         }

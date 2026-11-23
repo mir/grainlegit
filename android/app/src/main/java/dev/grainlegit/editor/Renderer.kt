@@ -32,6 +32,7 @@ internal object NativeRenderer {
     @JvmStatic external fun setDetail(handle: Long, bitmap: Bitmap, x: Int, y: Int)
     @JvmStatic external fun draw(
         handle: Long, edit: String, compare: Boolean, x: Float, y: Float, scale: Float, useDetail: Boolean,
+        previewToSource: FloatArray?,
     )
     @JvmStatic external fun padding(edit: String, edge: Int): Int
     @JvmStatic external fun exportTile(
@@ -51,6 +52,7 @@ internal data class Frame(
     val edit: String,
     val compare: Boolean,
     val useDetail: Boolean,
+    val previewToSource: FloatArray?,
 )
 
 internal class Renderer(private val reportError: (String?) -> Unit) : AutoCloseable {
@@ -114,7 +116,7 @@ internal class Renderer(private val reportError: (String?) -> Unit) : AutoClosea
                 if (clear && handle != 0L) {
                     NativeRenderer.clear(handle)
                     if (surfaceActive && mounted.get() && !closed.get()) {
-                        NativeRenderer.draw(handle, "{}", false, 0f, 0f, 1f, false)
+                        NativeRenderer.draw(handle, "{}", false, 0f, 0f, 1f, false, null)
                     }
                 }
             }
@@ -220,13 +222,15 @@ internal class Renderer(private val reportError: (String?) -> Unit) : AutoClosea
         try {
             NativeRenderer.draw(
                 handle, frame.edit, frame.compare, frame.center.x, frame.center.y, frame.scale, frame.useDetail,
+                frame.previewToSource,
             )
         } finally {
             Trace.endSection()
         }
         val elapsedMs = (SystemClock.elapsedRealtimeNanos() - start) / 1_000_000.0
         if (lastFrame == null || lastFrame != frame) {
-            Log.d("Grainlegit", "Preview GPU completion ${elapsedMs.toInt()} ms zoomed=${frame.useDetail} original=${frame.compare}")
+            Log.d("Grainlegit", "Preview GPU completion ${elapsedMs.toInt()} ms zoomed=${frame.useDetail} " +
+                "original=${frame.compare} crop=${frame.previewToSource != null}")
         }
         lastFrame = frame
         report(null)

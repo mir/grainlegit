@@ -116,6 +116,7 @@ fn negative_preserves_grain_across_bands_and_viewport_crops() {
             center: [x as f32 + 11.5, y as f32 + 9.5],
             scale: 1.0,
             use_detail: true,
+            preview_to_source: None,
         };
         for expected in [&full_scan, &source] {
             let mut encoder = gpu.device.create_command_encoder(&Default::default());
@@ -140,6 +141,31 @@ fn negative_preserves_grain_across_bands_and_viewport_crops() {
                 );
             }
             frame.compare = true;
+        }
+
+        // The crop editor mirrors the cached Fit image in the presentation pass.
+        frame.center[0] = width as f32 - frame.center[0];
+        frame.preview_to_source = Some([-1.0, 0.0, width as f32, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        frame.compare = false;
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        presenter
+            .encode(
+                &gpu,
+                &mut encoder,
+                &target_view,
+                [extent.width, extent.height],
+                Some(&mut photo),
+                &frame,
+            )
+            .unwrap();
+        let actual = read(&gpu, encoder, &target, extent);
+        for row in 0..extent.height {
+            for column in 0..extent.width {
+                let source_column = x + extent.width - 1 - column;
+                let offset = 4 * ((y + row) * width + source_column) as usize;
+                let start = 4 * (row * extent.width + column) as usize;
+                assert_eq!(&actual[start..start + 4], &full_scan[offset..offset + 4]);
+            }
         }
     });
 }

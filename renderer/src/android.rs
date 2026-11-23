@@ -1,7 +1,7 @@
 use crate::edit::Edit;
 use crate::gpu::Gpu;
 use crate::preview::{Frame, Photo, Presenter};
-use jni::objects::{JClass, JObject, JString};
+use jni::objects::{JClass, JFloatArray, JObject, JString};
 use jni::sys::{jboolean, jfloat, jint, jlong, jobject};
 use jni::JNIEnv;
 use raw_window_handle::{AndroidDisplayHandle, AndroidNdkWindowHandle};
@@ -450,9 +450,21 @@ pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_draw(
     y: jfloat,
     scale: jfloat,
     use_detail: jboolean,
+    preview_to_source: JFloatArray,
 ) {
     call(env, |env| {
         let edit = parse_edit(env, &edit)?;
+        let preview_to_source = if preview_to_source.is_null() {
+            None
+        } else {
+            let mut matrix = [0.0; 9];
+            env.get_float_array_region(&preview_to_source, 0, &mut matrix)
+                .map_err(|error| error.to_string())?;
+            if !matrix.iter().all(|value| value.is_finite()) {
+                return Err("Invalid crop transform".into());
+            }
+            Some(matrix)
+        };
         with_engine(handle, |engine| {
             if ![x, y, scale].iter().all(|v| v.is_finite()) || scale <= 0.0 {
                 return Err("Invalid preview settings".into());
@@ -463,6 +475,7 @@ pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_draw(
                 center: [x, y],
                 scale,
                 use_detail: use_detail != 0,
+                preview_to_source,
             })
         })
     });

@@ -7,6 +7,7 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.IntSize
 import org.json.JSONObject
 import kotlin.math.ceil
@@ -31,6 +32,8 @@ internal data class Geometry(
     val centerX: Float = 0.5f,
     val centerY: Float = 0.5f,
 ) {
+    fun withoutCrop() = copy(ratio = 0, constrain = false, width = 1f, height = 1f, centerX = 0.5f, centerY = 0.5f)
+
     fun encode(): JSONObject = JSONObject().put("turns", turns).put("flipH", flipH).put("flipV", flipV)
         .put("straighten", straighten.toDouble()).put("horizontal", horizontal.toDouble())
         .put("vertical", vertical.toDouble()).put("ratio", ratio).put("constrain", constrain)
@@ -53,7 +56,7 @@ internal class GeometryLayout(val sourceSize: IntSize, geometry: Geometry) {
     private val transform = Matrix()
     private val inverse = Matrix()
     val output: IntSize
-    val fullRegion: Rect
+    val cropOrigin: Offset
 
     init {
         val oriented = Matrix().apply {
@@ -118,15 +121,12 @@ internal class GeometryLayout(val sourceSize: IntSize, geometry: Geometry) {
         output = IntSize(width, height)
         val left = cx - width / 2f
         val top = cy - height / 2f
+        cropOrigin = Offset(left, top)
         transform.postTranslate(-left, -top)
         check(transform.invert(inverse))
-        fullRegion = Rect(
-            floor(bounds.left - left).toInt().coerceAtMost(0),
-            floor(bounds.top - top).toInt().coerceAtMost(0),
-            ceil(bounds.right - left).toInt().coerceAtLeast(width),
-            ceil(bounds.bottom - top).toInt().coerceAtLeast(height),
-        )
     }
+
+    fun previewToSource() = FloatArray(9).also(inverse::getValues)
 
     private fun contains(x: Float, y: Float, width: Float, height: Float): Boolean {
         val points = floatArrayOf(

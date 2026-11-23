@@ -6,6 +6,7 @@ struct View {
     texture_span: vec2<f32>,
     scale: f32,
     srgb_surface: u32,
+    preview_to_source: array<vec4<f32>, 3>,
 }
 
 @group(0) @binding(0) var<uniform> view: View;
@@ -29,7 +30,15 @@ fn surface_color(srgb: vec3<f32>) -> vec4<f32> {
 
 @fragment
 fn photo(@builtin(position) screen: vec4<f32>) -> @location(0) vec4<f32> {
-    let source = (screen.xy - view.viewport_center) / view.scale + view.image_center;
+    let preview = (screen.xy - view.viewport_center) / view.scale + view.image_center;
+    let point = vec3(preview, 1.0);
+    let mapped = vec3(dot(view.preview_to_source[0].xyz, point),
+                      dot(view.preview_to_source[1].xyz, point),
+                      dot(view.preview_to_source[2].xyz, point));
+    if abs(mapped.z) < 1e-6 {
+        discard;
+    }
+    let source = mapped.xy / mapped.z;
     if any(source < vec2(0.0)) || any(source >= view.full_size) {
         discard;
     }

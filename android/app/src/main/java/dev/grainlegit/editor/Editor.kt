@@ -12,20 +12,25 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.systemGestures
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -57,6 +62,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -77,17 +83,8 @@ import kotlin.math.roundToInt
 import kotlin.random.Random
 
 private data class ActivePhoto(
-    val photo: Photo, val layout: GeometryLayout, val previewRegion: Rect,
-    val includesSurroundings: Boolean, val generation: Long,
-) {
-    val previewSize get() = IntSize(previewRegion.width(), previewRegion.height())
-
-    fun cropOnScreen(viewport: IntSize, scale: Float): ScreenRect {
-        val offset = viewport.center() - previewSize.center() * scale
-        val topLeft = offset - Offset(previewRegion.left.toFloat(), previewRegion.top.toFloat()) * scale
-        return ScreenRect(topLeft, Size(layout.output.width * scale, layout.output.height * scale))
-    }
-}
+    val photo: Photo, val layout: GeometryLayout, val geometry: Geometry, val generation: Long,
+)
 
 private data class BalanceSample(val point: IntOffset, val color: Color, val gains: List<Float>)
 
@@ -108,7 +105,6 @@ internal fun Editor() {
     val redo = remember { mutableStateListOf<Edit>() }
     var startEdit by remember { mutableStateOf<Edit?>(null) }
     var panel by rememberSaveable { mutableStateOf(Panel.Adjust) }
-    var group by rememberSaveable { mutableStateOf(ToolGroup.Light) }
     var tool by rememberSaveable { mutableStateOf(Tool.Exposure) }
     var cropTool by remember { mutableStateOf(Tool.Straighten) }
     var crop by remember { mutableStateOf<Geometry?>(null) }
@@ -179,7 +175,6 @@ internal fun Editor() {
         undo.clear()
         redo.clear()
         panel = Panel.Adjust
-        group = ToolGroup.Light
         tool = Tool.Exposure
         exportMessage = null
     }
@@ -273,24 +268,23 @@ internal fun Editor() {
         saveCurrent()
     }
 
-    val displayGeometry = crop ?: edit.geometry
-    val cropping = crop != null
-    LaunchedEffect(original, displayGeometry, cropping) {
+    val cropGeometry = crop
+    val cropping = cropGeometry != null
+    val sourceGeometry = if (cropping) Geometry() else edit.geometry
+    LaunchedEffect(original, sourceGeometry) {
         val input = original ?: return@LaunchedEffect
-        if (current != null) delay(35)
         try {
-            val (layout, region, bitmap) = withContext(decodeDispatcher) {
-                val layout = GeometryLayout(input.photo.size, displayGeometry)
-                val region = if (cropping) layout.fullRegion else layout.output.bounds()
-                val output = IntSize(region.width(), region.height())
+            val (layout, bitmap) = withContext(decodeDispatcher) {
+                val layout = GeometryLayout(input.photo.size, sourceGeometry)
+                val output = layout.output
                 val scale = (FIT_LONG_EDGE.toFloat() / max(output.width, output.height)).coerceAtMost(1f)
                 val dimensions = IntSize((output.width * scale).roundToInt().coerceAtLeast(1),
                     (output.height * scale).roundToInt().coerceAtLeast(1))
-                Triple(layout, region, layout.render(input.bitmap, input.photo.size.bounds(), region, dimensions))
+                layout to layout.render(input.bitmap, input.photo.size.bounds(), output.bounds(), dimensions)
             }
             val generation = renderer.beginSource(clear = false)
-            renderer.setSource(generation, IntSize(region.width(), region.height()), bitmap, seed)
-            current = ActivePhoto(input.photo, layout, region, cropping, generation)
+            renderer.setSource(generation, layout.output, bitmap, seed)
+            current = ActivePhoto(input.photo, layout, sourceGeometry, generation)
             photoError = null
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -300,21 +294,36 @@ internal fun Editor() {
     }
 
     val active = current
-    val photoSize = active?.previewSize
-    val cropInset = with(LocalDensity.current) { 18.dp.roundToPx() }
+    val cropSourceSize = active?.takeIf { cropping && it.geometry == sourceGeometry }?.photo?.size
+    // Changing the window leaves the cached image, camera, and presentation matrix alone.
+    val uncropped = cropGeometry?.withoutCrop()
+    val cropPreview = remember(cropSourceSize, uncropped) {
+        if (cropSourceSize != null && uncropped != null) GeometryLayout(cropSourceSize, uncropped) else null
+    }
+    val warp = remember(cropPreview) { cropPreview?.previewToSource() }
+    val photoSize = cropPreview?.output ?: active?.layout?.output
     val fitViewport = if (cropping) {
-        // Keep the crop handles clear of Android's edge gestures.
-        IntSize((viewport.width - 2 * cropInset).coerceAtLeast(0), (viewport.height - 2 * cropInset).coerceAtLeast(0))
+        val density = LocalDensity.current
+        val direction = LocalLayoutDirection.current
+        val system = WindowInsets.systemGestures
+        val gap = with(density) { 12.dp.roundToPx() }
+        val minimum = with(density) { 24.dp.roundToPx() }
+        val side = maxOf(minimum, maxOf(system.getLeft(density, direction), system.getRight(density, direction)) + gap)
+            .coerceAtMost(viewport.width / 3)
+        val end = maxOf(minimum, maxOf(system.getTop(density), system.getBottom(density)) + gap)
+            .coerceAtMost(viewport.height / 3)
+        IntSize(viewport.width - 2 * side, viewport.height - 2 * end)
     } else viewport
     val fit = if (photoSize != null) fitScale(photoSize, fitViewport) else 1f
-    val zoomEnabled = !cropping && !picking && curveDraft == null && active?.includesSurroundings == false
+    val zoomEnabled = !cropping && !picking && curveDraft == null && active?.geometry == edit.geometry
     val view = photoSize?.let { ((if (zoomEnabled) zoom else null) ?: Camera(fit, it.center())).constrain(it, viewport, fit) }
     val fullResolution = zoomEnabled && view?.scale == 1f && zoom != null
     val previewEdit = printDraft ?: edit.copy(curves = curveDraft ?: edit.curves, balance = sample?.gains ?: edit.balance)
     val nativeEdit = remember(previewEdit) { previewEdit.nativeSettings() }
     SideEffect {
-        renderer.request(Frame(active?.generation ?: 0L, view?.pixelAligned(viewport)?.center ?: Offset.Zero,
-            view?.scale ?: 1f, nativeEdit, comparing, fullResolution))
+        val previewCamera = if (warp == null) view?.pixelAligned(viewport) else view
+        renderer.request(Frame(active?.generation ?: 0L, previewCamera?.center ?: Offset.Zero,
+            previewCamera?.scale ?: 1f, nativeEdit, comparing, fullResolution, warp))
     }
 
     val visible = if (fullResolution && viewport.width > 0 && viewport.height > 0) {
@@ -348,30 +357,47 @@ internal fun Editor() {
     val currentViewport by rememberUpdatedState(viewport)
     val currentCrop by rememberUpdatedState(crop)
     val currentPhoto by rememberUpdatedState(active)
-    val cropWindow = active?.takeIf { it.includesSurroundings && cropping }?.cropOnScreen(viewport, fit)
+    val selection = remember(cropSourceSize, cropGeometry) {
+        if (cropSourceSize != null && cropGeometry != null) GeometryLayout(cropSourceSize, cropGeometry) else null
+    }
+    val cropWindow = if (selection != null && cropPreview != null) {
+        val topLeft = viewport.center() + (selection.cropOrigin - cropPreview.cropOrigin - cropPreview.output.center()) * fit
+        ScreenRect(topLeft, Size(selection.output.width * fit, selection.output.height * fit))
+    } else null
     val currentCropWindow by rememberUpdatedState(cropWindow)
+    val currentCropSize by rememberUpdatedState(cropPreview?.output)
+    val cropTouchArea by rememberUpdatedState(ScreenRect(
+        viewport.center() - fitViewport.center(), Size(fitViewport.width.toFloat(), fitViewport.height.toFloat()),
+    ))
     val gestures = when {
         cropping -> Modifier.pointerInput(Unit) {
-            var gesture: CropDrag? = null
-            var movement = Offset.Zero
-            detectDragGestures(onDragStart = { point ->
-                val photo = currentPhoto ?: return@detectDragGestures
-                val window = currentCropWindow ?: return@detectDragGestures
-                val draft = currentCrop ?: return@detectDragGestures
-                val scale = currentView?.scale ?: return@detectDragGestures
-                val bounds = Size(photo.previewSize.width * scale, photo.previewSize.height * scale)
-                val slop = 24.dp.toPx()
-                val nearX = minOf(abs(point.x - window.left), abs(point.x - window.right)) <= slop
-                val nearY = minOf(abs(point.y - window.top), abs(point.y - window.bottom)) <= slop
+            awaitEachGesture {
+                val down = awaitFirstDown()
+                val point = down.position
+                if (!cropTouchArea.contains(point)) return@awaitEachGesture
+                val photo = currentCropSize ?: return@awaitEachGesture
+                val window = currentCropWindow ?: return@awaitEachGesture
+                val draft = currentCrop ?: return@awaitEachGesture
+                val scale = currentView?.scale ?: return@awaitEachGesture
+                val bounds = Size(photo.width * scale, photo.height * scale)
+                val handleRadius = 20.dp.toPx()
+                val nearX = minOf(abs(point.x - window.left), abs(point.x - window.right)) <= handleRadius
+                val nearY = minOf(abs(point.y - window.top), abs(point.y - window.bottom)) <= handleRadius
                 val corner = if (nearX && nearY) Offset(if (point.x < window.center.x) -1f else 1f,
                     if (point.y < window.center.y) -1f else 1f) else null
-                movement = Offset.Zero
-                gesture = CropDrag(draft, window, bounds, currentViewport.center(), corner)
-            }, onDragEnd = { gesture = null }, onDragCancel = { gesture = null }) { event, delta ->
-                val drag = gesture ?: return@detectDragGestures
-                movement += delta
-                crop = drag.move(movement)
-                event.consume()
+                if (corner == null && !window.contains(point)) return@awaitEachGesture
+                val cropDrag = CropDrag(draft, window, bounds, currentViewport.center(), corner)
+                var movement = Offset.Zero
+                val start = awaitTouchSlopOrCancellation(down.id) { change, overSlop ->
+                    movement = overSlop
+                    change.consume()
+                } ?: return@awaitEachGesture
+                crop = cropDrag.move(movement)
+                drag(start.id) { event ->
+                    movement += event.position - event.previousPosition
+                    crop = cropDrag.move(movement)
+                    event.consume()
+                }
             }
         }
         picking -> Modifier.pointerInput(Unit) {
@@ -502,7 +528,11 @@ internal fun Editor() {
             Box(Modifier.fillMaxWidth().weight(1f).background(background)
                 .onSizeChanged { viewport = it }.then(gestures), contentAlignment = Alignment.Center) {
                 PreviewSurface(renderer)
-                cropWindow?.let { CropGrid(it) }
+                if (cropWindow != null && cropPreview != null) {
+                    val photoArea = ScreenRect(viewport.center() - cropPreview.output.center() * fit,
+                        Size(cropPreview.output.width * fit, cropPreview.output.height * fit))
+                    CropGrid(cropWindow, photoArea)
+                }
                 if (picking && photoSize != null) {
                     samplePoint?.let { point ->
                         val topLeft = viewport.center() - photoSize.center() * fit
@@ -558,8 +588,8 @@ internal fun Editor() {
                     }
                     EditControls(panel, {
                         panel = it
-                        tool = if (it == Panel.Adjust) group.tools.first() else it.defaultTool
-                    }, group, activeTool, edit, ::selectTool,
+                        tool = it.defaultTool
+                    }, activeTool, edit, ::selectTool,
                         onCrop = { cropTool = Tool.Straighten; crop = edit.geometry },
                         showSheet = {
                             if (it == Sheet.PrintSettings) printDraft = edit
@@ -587,17 +617,6 @@ internal fun Editor() {
                 val width = formatWidths[index].toString().removeSuffix(".0")
                 SheetChoice(name, edit.format == index, "$width mm wide") {
                     commit(edit.copy(format = index))
-                    dismissSheet()
-                }
-            }
-        }
-        Sheet.Groups -> EditorSheet("Adjust", ::dismissSheet) {
-            ToolGroup.entries.forEach { choice ->
-                SheetChoice(choice.name, group == choice) {
-                    if (group != choice) {
-                        group = choice
-                        tool = choice.tools.first()
-                    }
                     dismissSheet()
                 }
             }
@@ -698,16 +717,16 @@ private fun PreviewSurface(renderer: Renderer) {
 }
 
 @Composable
-private fun CropGrid(window: ScreenRect) {
+private fun CropGrid(window: ScreenRect, photoArea: ScreenRect) {
     Canvas(Modifier.fillMaxSize()) {
         val mask = background.copy(alpha = 0.67f)
         fun shade(left: Float, top: Float, width: Float, height: Float) {
             if (width > 0 && height > 0) drawRect(mask, Offset(left, top), Size(width, height))
         }
-        shade(0f, 0f, size.width, window.top)
-        shade(0f, window.bottom, size.width, size.height - window.bottom)
-        shade(0f, window.top, window.left, window.height)
-        shade(window.right, window.top, size.width - window.right, window.height)
+        shade(photoArea.left, photoArea.top, photoArea.width, window.top - photoArea.top)
+        shade(photoArea.left, window.bottom, photoArea.width, photoArea.bottom - window.bottom)
+        shade(photoArea.left, window.top, window.left - photoArea.left, window.height)
+        shade(window.right, window.top, photoArea.right - window.right, window.height)
         drawRect(ink, window.topLeft, window.size, style = Stroke(1.dp.toPx()))
         val line = ink.copy(alpha = 0.50f)
         for (index in 1..2) {

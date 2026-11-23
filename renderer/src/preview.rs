@@ -13,6 +13,7 @@ struct View {
     texture_span: [f32; 2],
     scale: f32,
     srgb_surface: u32,
+    preview_to_source: [[f32; 4]; 3],
 }
 
 pub struct Frame {
@@ -21,6 +22,7 @@ pub struct Frame {
     pub center: [f32; 2],
     pub scale: f32,
     pub use_detail: bool,
+    pub preview_to_source: Option<[f32; 9]>,
 }
 
 pub struct Photo {
@@ -151,6 +153,7 @@ impl Presenter {
     ) -> Result<(), String> {
         let bindings = if let Some(photo) = photo {
             let detail = frame.use_detail
+                && frame.preview_to_source.is_none()
                 && photo
                     .detail
                     .as_ref()
@@ -167,6 +170,9 @@ impl Presenter {
             if !original {
                 gpu.encode(encoder, image, &frame.edit, edge, photo.seed)?;
             }
+            let [a, b, c, d, e, f, g, h, i] = frame
+                .preview_to_source
+                .unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
             let view = View {
                 viewport_center: viewport.map(|v| v as f32 * 0.5),
                 image_center: frame.center,
@@ -175,6 +181,7 @@ impl Presenter {
                 texture_span: span.map(|v| v as f32),
                 scale: frame.scale,
                 srgb_surface: u32::from(self.srgb),
+                preview_to_source: [[a, b, c, 0.0], [d, e, f, 0.0], [g, h, i, 0.0]],
             };
             gpu.queue
                 .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&view));
