@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
 pub struct Settings {
     pub grain: f64,
     pub grain_size: f64,

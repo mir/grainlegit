@@ -6,3 +6,8 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+
+/android/.gradle/
+/android/.idea/
+/android/local.properties
+/renderer/target/

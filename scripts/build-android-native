@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+sdk=${1:?Android SDK path required}
+ndk_version=${2:?NDK version required}
+output=${3:?JNI output path required}
+
+case "$(uname -s)" in
+  Darwin) ndk_host=darwin-x86_64 ;;
+  Linux) ndk_host=linux-x86_64 ;;
+  *) printf 'Unsupported Android build host: %s\n' "$(uname -s)" >&2; exit 1 ;;
+esac
+
+# NDK r29 provides linker wrappers through API 35. The app's minimum is independent.
+linker="$sdk/ndk/$ndk_version/toolchains/llvm/prebuilt/$ndk_host/bin/aarch64-linux-android35-clang"
+if [[ ! -x "$linker" ]]; then
+  printf 'Install Android NDK %s under %s first.\n' "$ndk_version" "$sdk" >&2
+  exit 1
+fi
+
+cd "$repo/renderer"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$linker"
+export CARGO_TARGET_DIR="$repo/target/android"
+cargo build --locked --release --target aarch64-linux-android
+mkdir -p "$output/arm64-v8a"
+install -m 755 "$CARGO_TARGET_DIR/aarch64-linux-android/release/libgrainlegit_renderer.so" "$output/arm64-v8a/"
