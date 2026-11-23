@@ -1,9 +1,10 @@
 # Grainlegit
 
-A native Android port of Filmgrain, a simulator of colour-negative dye clouds and optical printing. This repository starts with the portable settings crate, our calibrated emulsion profiles, and runnable macOS and CPU references. The Android app and Vulkan renderer are planned in [PLAN.md](PLAN.md).
+Grainlegit brings Filmgrain’s colour-negative and optical-print simulation to Android. The repository contains the editor prototype, portable settings, calibrated emulsion profiles, and reference renderers. See the [Android implementation plan](PLAN.md) for the app and Vulkan milestones.
 
 | Path | Purpose |
 | --- | --- |
+| [`design/android-editor.figcraft`](design/android-editor.figcraft) | Editable Android prototype. Open in FigCraft and choose **Try the editor** in Present mode. |
 | `src/` | Portable Rust settings, defaults, and stock selection |
 | `profiles/` | Emulsion parameters shared by Rust and the reference renderers, with [calibration sources and method](profiles/grain-calibration.md) |
 | `reference/` | Python CLI and CPU model, Apple Silicon Metal renderer, calibration script, and renderer parity tests |
