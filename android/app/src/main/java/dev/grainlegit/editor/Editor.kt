@@ -19,13 +19,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -47,16 +48,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect as ScreenRect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.edit
 import androidx.core.net.toUri
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -69,8 +76,20 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.random.Random
 
-private val previewBackground = Color(0xFF0B0A0C)
-private data class ActivePhoto(val photo: Photo, val layout: GeometryLayout, val generation: Long)
+private data class ActivePhoto(
+    val photo: Photo, val layout: GeometryLayout, val previewRegion: Rect,
+    val includesSurroundings: Boolean, val generation: Long,
+) {
+    val previewSize get() = IntSize(previewRegion.width(), previewRegion.height())
+
+    fun cropOnScreen(viewport: IntSize, scale: Float): ScreenRect {
+        val offset = viewport.center() - previewSize.center() * scale
+        val topLeft = offset - Offset(previewRegion.left.toFloat(), previewRegion.top.toFloat()) * scale
+        return ScreenRect(topLeft, Size(layout.output.width * scale, layout.output.height * scale))
+    }
+}
+
+private data class BalanceSample(val point: IntOffset, val color: Color, val gains: List<Float>)
 
 private val decodeDispatcher = Dispatchers.IO.limitedParallelism(1)
 
@@ -80,22 +99,26 @@ internal fun Editor() {
     val resolver = context.contentResolver
     val scope = rememberCoroutineScope()
     val preferences = remember(context) { context.getSharedPreferences("last-edit", Context.MODE_PRIVATE) }
-    var uri by rememberSaveable { mutableStateOf(preferences.getString("photo", null)) }
-    var seed by rememberSaveable { mutableStateOf(preferences.getLong("seed", Random.nextLong())) }
-    var edit by rememberSaveable(stateSaver = Edit.saver) {
-        val restored = preferences.getString("recipe", null)?.let { runCatching { Edit.restore(it) }.getOrNull() }
-        mutableStateOf(restored ?: Edit())
-    }
+    var recents by remember(preferences) { mutableStateOf(loadRecentEdits(preferences)) }
+    var uri by rememberSaveable { mutableStateOf<String?>(null) }
+    var seed by rememberSaveable { mutableStateOf(0L) }
+    var edit by rememberSaveable(stateSaver = Edit.saver) { mutableStateOf(Edit()) }
+    var title by remember { mutableStateOf("Photo") }
     val undo = remember { mutableStateListOf<Edit>() }
     val redo = remember { mutableStateListOf<Edit>() }
     var startEdit by remember { mutableStateOf<Edit?>(null) }
-    var panel by rememberSaveable { mutableStateOf(Panel.Negative) }
+    var panel by rememberSaveable { mutableStateOf(Panel.Adjust) }
     var group by rememberSaveable { mutableStateOf(ToolGroup.Light) }
-    var tool by rememberSaveable { mutableStateOf(Tool.Grain) }
+    var tool by rememberSaveable { mutableStateOf(Tool.Exposure) }
     var cropTool by remember { mutableStateOf(Tool.Straighten) }
     var crop by remember { mutableStateOf<Geometry?>(null) }
-    var showingCurves by remember { mutableStateOf(false) }
+    var curveDraft by remember { mutableStateOf<List<List<Float>>?>(null) }
+    var curveChannel by remember { mutableStateOf(0) }
     var picking by remember { mutableStateOf(false) }
+    var samplePoint by remember { mutableStateOf<IntOffset?>(null) }
+    var sample by remember { mutableStateOf<BalanceSample?>(null) }
+    var sheet by remember { mutableStateOf<Sheet?>(null) }
+    var printDraft by remember { mutableStateOf<Edit?>(null) }
 
     var zoom by remember { mutableStateOf<Camera?>(null) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
@@ -126,35 +149,96 @@ internal fun Editor() {
         startEdit = null
     }
 
+    fun saveCurrent() {
+        val input = uri ?: return
+        if (original?.photo?.uri?.toString() != input) return
+        val latest = RecentEdit(input, title, seed, edit)
+        val updated = (listOf(latest) + recents.filterNot { it.uri == input }).take(30)
+        if (updated == recents) return
+        val retained = updated.map { it.uri }.toSet()
+        val expired = recents.filterNot { it.uri in retained }
+        recents = updated
+        saveRecentEdits(preferences, updated)
+        expired.forEach {
+            runCatching { resolver.releasePersistableUriPermission(it.uri.toUri(), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        }
+    }
+
+    fun resetSample() {
+        samplePoint = null
+        sample = null
+        photoError = null
+    }
+
+    fun openPhoto(entry: RecentEdit) {
+        saveCurrent()
+        uri = entry.uri
+        seed = entry.seed
+        edit = entry.edit
+        title = entry.title
+        undo.clear()
+        redo.clear()
+        panel = Panel.Adjust
+        group = ToolGroup.Light
+        tool = Tool.Exposure
+        exportMessage = null
+    }
+
+    fun dismissSheet() {
+        sheet = null
+        printDraft = null
+    }
+
+    fun selectTool(selected: Tool) {
+        tool = selected
+        when (selected) {
+            Tool.Curves -> {
+                curveChannel = 0
+                curveDraft = edit.curves
+            }
+            Tool.WhiteBalance -> {
+                resetSample()
+                picking = true
+            }
+            else -> Unit
+        }
+    }
+
+    fun goBack() {
+        when {
+            sheet != null -> dismissSheet()
+            crop != null -> crop = null
+            curveDraft != null -> curveDraft = null
+            picking -> {
+                picking = false
+                resetSample()
+            }
+            !exporting -> {
+                saveCurrent()
+                uri = null
+            }
+        }
+    }
+
     val renderer = remember { Renderer { renderError = it } }
+    val saveLatest by rememberUpdatedState(::saveCurrent)
     DisposableEffect(renderer) {
         onDispose {
+            saveLatest()
             exportCancel.set(true)
             renderer.close()
         }
     }
-    BackHandler(enabled = crop != null || picking) {
-        crop = null
-        picking = false
-    }
+    BackHandler(enabled = uri != null) { goBack() }
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { chosen ->
         if (chosen != null) {
             runCatching { resolver.takePersistableUriPermission(chosen, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            val previous = uri
-            uri = chosen.toString()
-            if (previous != null && previous != uri) {
-                runCatching { resolver.releasePersistableUriPermission(previous.toUri(), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            }
-            seed = Random.nextLong()
-            edit = Edit()
-            undo.clear()
-            redo.clear()
-            exportMessage = null
+            val selected = chosen.toString()
+            openPhoto(recents.firstOrNull { it.uri == selected } ?: RecentEdit(selected, "Photo", Random.nextLong(), Edit()))
         }
     }
 
     LaunchedEffect(uri, seed) {
-        val input = uri ?: return@LaunchedEffect
         renderer.beginSource()
         current = null
         original = null
@@ -162,10 +246,19 @@ internal fun Editor() {
         crop = null
         comparing = false
         picking = false
-        photoError = null
+        curveDraft = null
+        dismissSheet()
+        resetSample()
+        val input = uri ?: return@LaunchedEffect
         opening = true
         try {
-            original = withContext(decodeDispatcher) { importPhoto(resolver, input.toUri()) }
+            val (imported, name) = withContext(decodeDispatcher) {
+                val photoUri = input.toUri()
+                importPhoto(resolver, photoUri) to resolver.photoTitle(photoUri)
+            }
+            title = name
+            original = imported
+            saveCurrent()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -176,32 +269,28 @@ internal fun Editor() {
     }
 
     LaunchedEffect(uri, seed, edit, original?.photo) {
-        val opened = original?.photo ?: return@LaunchedEffect
-        if (opened.uri.toString() != uri) return@LaunchedEffect
         delay(300)
-        preferences.edit {
-            putString("photo", uri)
-            putLong("seed", seed)
-            putString("recipe", edit.savedSettings())
-        }
+        saveCurrent()
     }
 
     val displayGeometry = crop ?: edit.geometry
-    LaunchedEffect(original, displayGeometry) {
+    val cropping = crop != null
+    LaunchedEffect(original, displayGeometry, cropping) {
         val input = original ?: return@LaunchedEffect
         if (current != null) delay(35)
         try {
-            val (layout, bitmap) = withContext(decodeDispatcher) {
+            val (layout, region, bitmap) = withContext(decodeDispatcher) {
                 val layout = GeometryLayout(input.photo.size, displayGeometry)
-                val output = layout.output
+                val region = if (cropping) layout.fullRegion else layout.output.bounds()
+                val output = IntSize(region.width(), region.height())
                 val scale = (FIT_LONG_EDGE.toFloat() / max(output.width, output.height)).coerceAtMost(1f)
                 val dimensions = IntSize((output.width * scale).roundToInt().coerceAtLeast(1),
                     (output.height * scale).roundToInt().coerceAtLeast(1))
-                layout to layout.render(input.bitmap, input.photo.size.bounds(), output.bounds(), dimensions)
+                Triple(layout, region, layout.render(input.bitmap, input.photo.size.bounds(), region, dimensions))
             }
             val generation = renderer.beginSource(clear = false)
-            renderer.setSource(generation, layout.output, bitmap, seed)
-            current = ActivePhoto(input.photo, layout, generation)
+            renderer.setSource(generation, IntSize(region.width(), region.height()), bitmap, seed)
+            current = ActivePhoto(input.photo, layout, region, cropping, generation)
             photoError = null
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -211,11 +300,18 @@ internal fun Editor() {
     }
 
     val active = current
-    val photoSize = active?.layout?.output
-    val fit = if (photoSize != null) fitScale(photoSize, viewport) else 1f
-    val view = photoSize?.let { ((if (crop == null) zoom else null) ?: Camera(fit, it.center())).constrain(it, viewport, fit) }
-    val fullResolution = view?.scale == 1f && zoom != null && crop == null
-    val nativeEdit = remember(edit) { edit.nativeSettings() }
+    val photoSize = active?.previewSize
+    val cropInset = with(LocalDensity.current) { 18.dp.roundToPx() }
+    val fitViewport = if (cropping) {
+        // Keep the crop handles clear of Android's edge gestures.
+        IntSize((viewport.width - 2 * cropInset).coerceAtLeast(0), (viewport.height - 2 * cropInset).coerceAtLeast(0))
+    } else viewport
+    val fit = if (photoSize != null) fitScale(photoSize, fitViewport) else 1f
+    val zoomEnabled = !cropping && !picking && curveDraft == null && active?.includesSurroundings == false
+    val view = photoSize?.let { ((if (zoomEnabled) zoom else null) ?: Camera(fit, it.center())).constrain(it, viewport, fit) }
+    val fullResolution = zoomEnabled && view?.scale == 1f && zoom != null
+    val previewEdit = printDraft ?: edit.copy(curves = curveDraft ?: edit.curves, balance = sample?.gains ?: edit.balance)
+    val nativeEdit = remember(previewEdit) { previewEdit.nativeSettings() }
     SideEffect {
         renderer.request(Frame(active?.generation ?: 0L, view?.pixelAligned(viewport)?.center ?: Offset.Zero,
             view?.scale ?: 1f, nativeEdit, comparing, fullResolution))
@@ -252,27 +348,29 @@ internal fun Editor() {
     val currentViewport by rememberUpdatedState(viewport)
     val currentCrop by rememberUpdatedState(crop)
     val currentPhoto by rememberUpdatedState(active)
+    val cropWindow = active?.takeIf { it.includesSurroundings && cropping }?.cropOnScreen(viewport, fit)
+    val currentCropWindow by rememberUpdatedState(cropWindow)
     val gestures = when {
-        crop != null -> Modifier.pointerInput(photoSize, fit) {
-            var resizing = false
+        cropping -> Modifier.pointerInput(Unit) {
+            var gesture: CropDrag? = null
+            var movement = Offset.Zero
             detectDragGestures(onDragStart = { point ->
-                val photo = photoSize ?: return@detectDragGestures
-                val half = Offset(photo.width * fit / 2f, photo.height * fit / 2f)
-                val fromCenter = point - currentViewport.center()
-                resizing = abs(fromCenter.x) > half.x * 0.65f && abs(fromCenter.y) > half.y * 0.65f
-            }) { event, delta ->
+                val photo = currentPhoto ?: return@detectDragGestures
+                val window = currentCropWindow ?: return@detectDragGestures
                 val draft = currentCrop ?: return@detectDragGestures
-                val camera = currentView ?: return@detectDragGestures
-                val dimension = photoSize ?: return@detectDragGestures
-                val movement = Offset(delta.x / (dimension.width * camera.scale), delta.y / (dimension.height * camera.scale))
-                crop = if (resizing) {
-                    val side = event.position - currentViewport.center()
-                    val dx = if (side.x >= 0) movement.x else -movement.x
-                    val dy = if (side.y >= 0) movement.y else -movement.y
-                    draft.copy(width = (draft.width + dx * 2).coerceIn(0.1f, 1f),
-                        height = (draft.height + dy * 2).coerceIn(0.1f, 1f))
-                } else draft.copy(centerX = (draft.centerX + movement.x).coerceIn(0f, 1f),
-                    centerY = (draft.centerY + movement.y).coerceIn(0f, 1f))
+                val scale = currentView?.scale ?: return@detectDragGestures
+                val bounds = Size(photo.previewSize.width * scale, photo.previewSize.height * scale)
+                val slop = 24.dp.toPx()
+                val nearX = minOf(abs(point.x - window.left), abs(point.x - window.right)) <= slop
+                val nearY = minOf(abs(point.y - window.top), abs(point.y - window.bottom)) <= slop
+                val corner = if (nearX && nearY) Offset(if (point.x < window.center.x) -1f else 1f,
+                    if (point.y < window.center.y) -1f else 1f) else null
+                movement = Offset.Zero
+                gesture = CropDrag(draft, window, bounds, currentViewport.center(), corner)
+            }, onDragEnd = { gesture = null }, onDragCancel = { gesture = null }) { event, delta ->
+                val drag = gesture ?: return@detectDragGestures
+                movement += delta
+                crop = drag.move(movement)
                 event.consume()
             }
         }
@@ -284,25 +382,10 @@ internal fun Editor() {
                 if (pixel.x !in 0f..<photo.layout.output.width.toFloat() || pixel.y !in 0f..<photo.layout.output.height.toFloat()) {
                     return@detectTapGestures
                 }
-                picking = false
-                scope.launch {
-                    try {
-                        val region = Rect(pixel.x.toInt(), pixel.y.toInt(), pixel.x.toInt() + 1, pixel.y.toInt() + 1)
-                            .copyExpanded(photo.layout.output, 4)
-                        val balance = withContext(decodeDispatcher) {
-                            val bitmap = photo.photo.renderOutput(resolver, photo.layout, region)
-                            try { sampleBalance(bitmap) } finally { bitmap.recycle() }
-                        }
-                        if (photo == currentPhoto) commit(edit.copy(balance = balance))
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (error: Exception) {
-                        photoError = error.message ?: "Could not sample white balance"
-                    }
-                }
+                samplePoint = IntOffset(pixel.x.toInt(), pixel.y.toInt())
             }
         }
-        else -> Modifier.pointerInput(photoSize, fit) {
+        zoomEnabled -> Modifier.pointerInput(photoSize, fit) {
             val size = photoSize ?: return@pointerInput
             detectTransformGestures { centroid, pan, factor, _ ->
                 val old = currentView ?: return@detectTransformGestures
@@ -313,112 +396,291 @@ internal fun Editor() {
                 zoom = if (scale <= fit) null else Camera(scale, center).constrain(size, currentViewport, fit)
             }
         }
+        else -> Modifier
+    }
+
+    LaunchedEffect(picking, samplePoint, active) {
+        val point = samplePoint ?: return@LaunchedEffect
+        if (!picking || active == null) return@LaunchedEffect
+        try {
+            val region = Rect(point.x, point.y, point.x + 1, point.y + 1).copyExpanded(active.layout.output, 4)
+            sample = withContext(decodeDispatcher) {
+                val bitmap = active.photo.renderOutput(resolver, active.layout, region)
+                try { sampleBalance(bitmap, point) } finally { bitmap.recycle() }
+            }
+            photoError = null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            photoError = error.message ?: "Could not sample white balance"
+        }
+    }
+
+    fun startExport(photo: ActivePhoto) {
+        exportCancel.set(false)
+        exportMessage = null
+        progress = 0f
+        val snapshot = edit
+        val exportSeed = seed
+        exportJob = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val layout = GeometryLayout(photo.photo.size, snapshot.geometry)
+                savePhoto(context, renderer, photo.photo, layout, exportSeed, snapshot.nativeSettings(), exportCancel) {
+                    progress = it
+                }
+                sheet = Sheet.Saved
+            } catch (cancelled: CancellationException) {
+                exportMessage = "Export cancelled"
+                throw cancelled
+            } catch (error: Exception) {
+                exportMessage = error.message ?: "Could not export the photo"
+            } finally {
+                exportJob = null
+            }
+        }
+        exportJob?.start()
     }
 
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Grainlegit", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-            if (active != null && crop == null) {
-                ActionIcon("Undo", "↶", undo.isNotEmpty()) {
-                    redo.add(edit)
-                    edit = undo.removeAt(undo.lastIndex)
-                }
-                ActionIcon("Redo", "↷", redo.isNotEmpty()) {
-                    undo.add(edit)
-                    edit = redo.removeAt(redo.lastIndex)
-                }
-                ActionIcon("Export JPEG", "↑", !exporting) {
-                    exportCancel.set(false)
-                    exportMessage = null
-                    progress = 0f
-                    val snapshot = edit
-                    exportJob = scope.launch {
-                        try {
-                            val layout = GeometryLayout(active.photo.size, snapshot.geometry)
-                            savePhoto(context, renderer, active.photo, layout, seed, snapshot.nativeSettings(), exportCancel) { progress = it }
-                            exportMessage = "Saved to Pictures/Grainlegit"
-                        } catch (cancelled: CancellationException) {
-                            exportMessage = "Export cancelled"
-                            throw cancelled
-                        } catch (error: Exception) {
-                            exportMessage = error.message ?: "Could not export the photo"
-                        } finally {
-                            exportJob = null
+        if (uri == null) {
+            RecentEdits(recents, { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }, ::openPhoto)
+        } else {
+            val cropDraft = crop
+            val curves = curveDraft
+            val editingTool = cropDraft != null || curves != null || picking
+            val sampled = sample?.takeIf { it.point == samplePoint }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                EditorAction(if (editingTool) "Cancel" else "Recent edits",
+                    if (editingTool) EditorSymbol.Close else EditorSymbol.Back, enabled = !exporting, action = ::goBack)
+                if (editingTool) {
+                    val heading = when {
+                        cropDraft != null -> "Crop"
+                        curves != null -> "Curves"
+                        else -> "White balance"
+                    }
+                    Text(heading, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    if (curves != null || picking) {
+                        TextButton(onClick = {
+                            if (curves == null) resetSample()
+                            else curveDraft = curves.mapIndexed { index, curve ->
+                                if (index == curveChannel) neutralCurve else curve
+                            }
+                        }) { Text("Reset") }
+                    }
+                    TextButton(enabled = !picking || sampled != null, onClick = {
+                        when {
+                            cropDraft != null -> {
+                                if (cropDraft != edit.geometry) zoom = null
+                                commit(edit.copy(geometry = cropDraft))
+                                crop = null
+                            }
+                            curves != null -> {
+                                commit(edit.copy(curves = curves))
+                                curveDraft = null
+                            }
+                            sampled != null -> {
+                                commit(edit.copy(balance = sampled.gains))
+                                picking = false
+                                resetSample()
+                            }
                         }
+                    }) { Text("Apply") }
+                } else {
+                    EditorAction("Undo", EditorSymbol.Undo, undo.isNotEmpty()) {
+                        redo.add(edit)
+                        edit = undo.removeAt(undo.lastIndex)
+                    }
+                    EditorAction("Redo", EditorSymbol.Redo, redo.isNotEmpty()) {
+                        undo.add(edit)
+                        edit = redo.removeAt(redo.lastIndex)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    EditorAction("Export JPEG", EditorSymbol.Export, active != null && !exporting) { sheet = Sheet.Export }
+                }
+            }
+
+            Box(Modifier.fillMaxWidth().weight(1f).background(background)
+                .onSizeChanged { viewport = it }.then(gestures), contentAlignment = Alignment.Center) {
+                PreviewSurface(renderer)
+                cropWindow?.let { CropGrid(it) }
+                if (picking && photoSize != null) {
+                    samplePoint?.let { point ->
+                        val topLeft = viewport.center() - photoSize.center() * fit
+                        SampleTarget(topLeft + Offset(point.x.toFloat(), point.y.toFloat()) * fit)
                     }
                 }
-            }
-            Button(enabled = !exporting, onClick = { picker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly)) }) {
-                Text("Open photo")
-            }
-        }
-
-        Box(Modifier.fillMaxWidth().weight(1f).background(previewBackground)
-            .onSizeChanged { viewport = it }.then(gestures), contentAlignment = Alignment.Center) {
-            PreviewSurface(renderer)
-            if (crop != null && photoSize != null) CropGrid(photoSize, fit)
-            val status = photoError ?: renderError ?: when {
-                opening || (active == null && original != null) -> "Opening photo…"
-                active == null -> "Open a JPEG or HEIF photo"
-                picking -> "Tap a neutral area"
-                else -> null
-            }
-            if (status != null) {
-                Surface(color = background, shape = RoundedCornerShape(12.dp)) {
+                val status = photoError ?: renderError ?: if (opening || (active == null && original != null)) {
+                    "Opening photo…"
+                } else null
+                if (status != null) Surface(color = panelColor, shape = RoundedCornerShape(12.dp)) {
                     Text(status, Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                 }
             }
-        }
-        if (exporting) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                LinearProgressIndicator(progress = { progress }, modifier = Modifier.weight(1f))
-                TextButton(onClick = { exportCancel.set(true); exportJob?.cancel() }) { Text("Cancel export") }
-            }
-        } else if (exportMessage != null) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(exportMessage.orEmpty(), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { exportMessage = null }) { Text("Dismiss") }
-            }
-        }
 
-        val draft = crop
-        if (draft == null) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                FilterChip(zoom == null, { zoom = null }, { Text("Fit") }, enabled = active != null)
-                FilterChip(fullResolution, {
-                    if (photoSize != null) zoom = Camera(1f, view?.center ?: photoSize.center())
-                }, { Text("100%") }, enabled = active != null)
-                if (active != null) CompareControl(comparing) { comparing = it }
+            if (exporting) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    LinearProgressIndicator(progress = { progress }, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { exportCancel.set(true); exportJob?.cancel() }) { Text("Cancel export") }
+                }
+            } else if (exportMessage != null) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(exportMessage.orEmpty(), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = { exportMessage = null }) { Text("Dismiss") }
+                }
             }
-            EditControls(panel, { panel = it; tool = if (it == Panel.Adjust) group.tools.first() else it.defaultTool; picking = false },
-                group, { group = it; tool = it.tools.first(); picking = false },
-                tool, { tool = it; picking = false }, edit, active != null, picking,
-                onCrop = { zoom = null; cropTool = Tool.Straighten; crop = edit.geometry; picking = false },
-                change = { edit = it }, start = { startEdit = edit }, finish = ::finishEdit, commit = ::commit,
-                openCurves = { showingCurves = true }, pickBalance = { picking = !picking })
-        } else {
-            CropControls(draft, cropTool, { cropTool = it }, { crop = it },
-                apply = { commit(edit.copy(geometry = draft)); crop = null }, cancel = { crop = null })
+
+            when {
+                cropDraft != null -> CropControls(cropDraft, cropTool, { cropTool = it }, { crop = it }) { sheet = Sheet.Ratio }
+                curves != null -> CurveControls(curves, curveChannel, { curveChannel = it }, { curveDraft = it })
+                picking -> Column(Modifier.fillMaxWidth().background(panelColor).padding(18.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (sample != null) "Sampled colour" else "Tap a neutral area in the photo",
+                            Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                        sample?.let {
+                            Box(Modifier.size(52.dp, 30.dp).background(it.color, RoundedCornerShape(7.dp)))
+                        }
+                    }
+                    if (sample != null) Text("Tap another area to resample", color = muted,
+                        modifier = Modifier.padding(top = 12.dp))
+                }
+                active != null -> {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        EditorChip("Fit", zoom == null, Modifier.width(48.dp), plain = true, highlightOnly = true) { zoom = null }
+                        EditorChip("100%", fullResolution, Modifier.width(55.dp), plain = true, highlightOnly = true) {
+                            if (photoSize != null) zoom = Camera(1f, view?.center ?: photoSize.center())
+                        }
+                        Spacer(Modifier.weight(1f))
+                        CompareControl(comparing) { comparing = it }
+                    }
+                    val activeTool = when (tool) {
+                        Tool.Stock, Tool.Format, Tool.Medium -> panel.defaultTool
+                        else -> tool
+                    }
+                    EditControls(panel, {
+                        panel = it
+                        tool = if (it == Panel.Adjust) group.tools.first() else it.defaultTool
+                    }, group, activeTool, edit, ::selectTool,
+                        onCrop = { cropTool = Tool.Straighten; crop = edit.geometry },
+                        showSheet = {
+                            if (it == Sheet.PrintSettings) printDraft = edit
+                            sheet = it
+                        },
+                        change = { edit = it }, start = { startEdit = edit }, finish = ::finishEdit, commit = ::commit)
+                }
+            }
         }
     }
-    if (showingCurves) {
-        CurvesDialog(edit.curves, { commit(edit.copy(curves = it)); showingCurves = false }, { showingCurves = false })
+
+    when (sheet) {
+        Sheet.Stock -> EditorSheet("Film stock", ::dismissSheet) {
+            val descriptions = listOf("Colour negative", "Colour negative", "Colour negative", "Colour negative", "Tungsten negative")
+            stockNames.forEachIndexed { index, name ->
+                SheetChoice(name, edit.stockId == stockIds[index], descriptions[index]) {
+                    commit(edit.copy(stockId = stockIds[index]))
+                    dismissSheet()
+                }
+            }
+        }
+        Sheet.Format -> EditorSheet("Negative format", ::dismissSheet) {
+            Text("Smaller negatives make grain more visible.", color = muted, modifier = Modifier.padding(bottom = 8.dp))
+            formatNames.forEachIndexed { index, name ->
+                val width = formatWidths[index].toString().removeSuffix(".0")
+                SheetChoice(name, edit.format == index, "$width mm wide") {
+                    commit(edit.copy(format = index))
+                    dismissSheet()
+                }
+            }
+        }
+        Sheet.Groups -> EditorSheet("Adjust", ::dismissSheet) {
+            ToolGroup.entries.forEach { choice ->
+                SheetChoice(choice.name, group == choice) {
+                    if (group != choice) {
+                        group = choice
+                        tool = choice.tools.first()
+                    }
+                    dismissSheet()
+                }
+            }
+        }
+        Sheet.Ratio -> EditorSheet("Aspect ratio", ::dismissSheet) {
+            cropRatios.forEachIndexed { index, ratio ->
+                SheetChoice(ratio, crop?.ratio == index) {
+                    crop = crop?.copy(ratio = index)
+                    dismissSheet()
+                }
+            }
+        }
+        Sheet.PrintSettings -> printDraft?.let { draft ->
+            PrintSettingsSheet(draft, { printDraft = it }, ::dismissSheet) {
+                commit(draft)
+                dismissSheet()
+            }
+        }
+        Sheet.Export -> EditorSheet("Export photo", ::dismissSheet, "Save copy", {
+            dismissSheet()
+            if (active != null) startExport(active)
+        }) {
+            Text("Save a JPEG copy to your device.", color = muted)
+            Text("JPEG · Full resolution · sRGB", modifier = Modifier.padding(top = 12.dp))
+        }
+        Sheet.Saved -> EditorSheet("Photo saved", ::dismissSheet, "Done", ::dismissSheet) {
+            Text("You can find the JPEG in your gallery.", color = muted)
+        }
+        null -> Unit
     }
 }
 
-private fun sampleBalance(bitmap: android.graphics.Bitmap): List<Float> {
+private fun sampleBalance(bitmap: android.graphics.Bitmap, point: IntOffset): BalanceSample {
     val pixels = IntArray(bitmap.width * bitmap.height)
     bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
     fun linear(channel: Int): Double {
         val v = channel / 255.0
         return if (v <= 0.04045) v / 12.92 else ((v + 0.055) / 1.055).pow(2.4)
     }
-    val rgb = listOf(pixels.map { linear(PixelColor.red(it)) }.average(),
-        pixels.map { linear(PixelColor.green(it)) }.average(), pixels.map { linear(PixelColor.blue(it)) }.average())
+    fun srgb(linear: Double): Float = (if (linear <= 0.0031308) linear * 12.92 else
+        1.055 * linear.pow(1.0 / 2.4) - 0.055).toFloat().coerceIn(0f, 1f)
+    val rgb = DoubleArray(3)
+    for (pixel in pixels) {
+        rgb[0] += linear(PixelColor.red(pixel)) / pixels.size
+        rgb[1] += linear(PixelColor.green(pixel)) / pixels.size
+        rgb[2] += linear(PixelColor.blue(pixel)) / pixels.size
+    }
     val neutral = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722
     require(neutral > 0.003) { "Choose a brighter neutral area" }
-    return rgb.map { (neutral / it.coerceAtLeast(0.001)).toFloat().coerceIn(0.35f, 3f) }
+    val gains = rgb.map { (neutral / it.coerceAtLeast(0.001)).toFloat().coerceIn(0.35f, 3f) }
+    return BalanceSample(point, Color(srgb(rgb[0]), srgb(rgb[1]), srgb(rgb[2])), gains)
+}
+
+private data class CropDrag(
+    val draft: Geometry, val window: ScreenRect, val photo: Size, val viewportCenter: Offset, val corner: Offset?,
+) {
+    fun move(delta: Offset): Geometry {
+        val origin = viewportCenter - Offset(photo.width, photo.height) / 2f
+        if (corner == null) {
+            val center = window.center + delta - origin
+            return draft.copy(centerX = (center.x / photo.width).coerceIn(0f, 1f),
+                centerY = (center.y / photo.height).coerceIn(0f, 1f))
+        }
+
+        val dx = delta.x * corner.x
+        val dy = delta.y * corner.y
+        val width: Float
+        val height: Float
+        if (draft.ratio == 0) {
+            width = (window.width + dx).coerceIn(photo.width * 0.05f, photo.width)
+            height = (window.height + dy).coerceIn(photo.height * 0.05f, photo.height)
+        } else {
+            val resize = (dx * window.width + dy * window.height) / (window.width * window.width + window.height * window.height)
+            val maxScale = minOf(photo.width / window.width, photo.height / window.height)
+            val scale = (1f + resize).coerceIn(0.1f, maxScale.coerceAtLeast(0.1f))
+            width = window.width * scale
+            height = window.height * scale
+        }
+        val center = window.center + Offset((width - window.width) * corner.x, (height - window.height) * corner.y) / 2f - origin
+        return draft.copy(width = (width / photo.width).coerceIn(0.001f, 1f),
+            height = (height / photo.height).coerceIn(0.001f, 1f),
+            centerX = (center.x / photo.width).coerceIn(0f, 1f), centerY = (center.y / photo.height).coerceIn(0f, 1f))
+    }
 }
 
 @Composable
@@ -436,21 +698,43 @@ private fun PreviewSurface(renderer: Renderer) {
 }
 
 @Composable
-private fun CropGrid(photo: IntSize, scale: Float) {
+private fun CropGrid(window: ScreenRect) {
     Canvas(Modifier.fillMaxSize()) {
-        val w = photo.width * scale
-        val h = photo.height * scale
-        val left = (size.width - w) / 2
-        val top = (size.height - h) / 2
-        val line = Color.White.copy(alpha = 0.66f)
-        for (i in 0..3) {
-            val x = left + w * i / 3
-            val y = top + h * i / 3
-            drawLine(line, Offset(x, top), Offset(x, top + h), 1.dp.toPx())
-            drawLine(line, Offset(left, y), Offset(left + w, y), 1.dp.toPx())
+        val mask = background.copy(alpha = 0.67f)
+        fun shade(left: Float, top: Float, width: Float, height: Float) {
+            if (width > 0 && height > 0) drawRect(mask, Offset(left, top), Size(width, height))
         }
-        for (x in listOf(left, left + w)) {
-            for (y in listOf(top, top + h)) drawCircle(Color.White, 3.dp.toPx(), Offset(x, y))
+        shade(0f, 0f, size.width, window.top)
+        shade(0f, window.bottom, size.width, size.height - window.bottom)
+        shade(0f, window.top, window.left, window.height)
+        shade(window.right, window.top, size.width - window.right, window.height)
+        drawRect(ink, window.topLeft, window.size, style = Stroke(1.dp.toPx()))
+        val line = ink.copy(alpha = 0.50f)
+        for (index in 1..2) {
+            val x = window.left + window.width * index / 3
+            val y = window.top + window.height * index / 3
+            drawLine(line, Offset(x, window.top), Offset(x, window.bottom), 1.dp.toPx())
+            drawLine(line, Offset(window.left, y), Offset(window.right, y), 1.dp.toPx())
         }
+        val handle = minOf(13.dp.toPx(), window.width / 3, window.height / 3)
+        fun corner(point: Offset, horizontal: Float, vertical: Float) {
+            drawLine(ink, point, point + Offset(horizontal * handle, 0f), 2.dp.toPx(), StrokeCap.Round)
+            drawLine(ink, point, point + Offset(0f, vertical * handle), 2.dp.toPx(), StrokeCap.Round)
+        }
+        corner(window.topLeft, 1f, 1f)
+        corner(window.topRight, -1f, 1f)
+        corner(window.bottomLeft, 1f, -1f)
+        corner(window.bottomRight, -1f, -1f)
+    }
+}
+
+@Composable
+private fun SampleTarget(point: Offset) {
+    Canvas(Modifier.fillMaxSize()) {
+        drawCircle(background.copy(alpha = 0.5f), 14.dp.toPx(), point)
+        drawCircle(ink, 14.dp.toPx(), point, style = Stroke(1.5.dp.toPx()))
+        val arm = 6.dp.toPx()
+        drawLine(ink, point - Offset(arm, 0f), point + Offset(arm, 0f), 1.dp.toPx())
+        drawLine(ink, point - Offset(0f, arm), point + Offset(0f, arm), 1.dp.toPx())
     }
 }

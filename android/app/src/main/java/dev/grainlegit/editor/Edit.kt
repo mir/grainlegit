@@ -18,19 +18,23 @@ internal enum class Tool(
     Contrast("Contrast"), Whites("Whites"), Blacks("Blacks"), Curves("Curves"),
     Temperature("Temperature"), Tint("Tint"), Saturation("Saturation"), Vibrance("Vibrance"),
     WhiteBalance("WB picker"), Sharpen("Sharpen", 0f, 2f),
-    Stock("Stock"), Format("Format"), CameraExposure("Camera EV", -2f, 2f, unit = " EV"),
-    Grain("Grain", 0f, 3f, 1f, 60), Medium("Medium"),
-    PrintExposure("Print EV", -4f, 4f, steps = 80, unit = " EV"),
+    CameraExposure("Negative exposure", -2f, 2f, unit = " EV"),
+    Grain("Grain amount", 0f, 3f, 1f, 60, "×"),
+    GrainSize("Grain size", 0.1f, 3f, 1f, 29, "×"),
+    GrainColour("Grain colour", 0f, 1f, 0.25f, 100),
+    PrintExposure("Print exposure", -4f, 4f, steps = 80, unit = " EV"),
     Enlargement("Enlargement", 1f, 30f, 6f, 58, "×"),
     EnlargerBlur("Enlarger blur", 0f, 150f, steps = 150, unit = " µm"),
-    PrintGrain("Print grain", 0f, 4f, 1f, 80),
+    PrintGrain("Print grain", 0f, 4f, 1f, 80, "×"),
     Cyan("Red light", -4f, 4f, steps = 80, unit = " EV"),
     Magenta("Green light", -4f, 4f, steps = 80, unit = " EV"),
     Yellow("Blue light", -4f, 4f, steps = 80, unit = " EV"),
     ScanBlur("Scan blur", 0f, 8f, unit = " px"), Aperture("Scan aperture", 1f, 8f, 1f, 35, " px"),
     Straighten("Straighten", -45f, 45f, steps = 180, unit = "°"),
     Horizontal("Horizontal", -30f, 30f, steps = 120, unit = "°"),
-    Vertical("Vertical", -30f, 30f, steps = 120, unit = "°");
+    Vertical("Vertical", -30f, 30f, steps = 120, unit = "°"),
+    // Keep names used in saved activity state before these moved to dedicated controls.
+    Stock("Stock"), Format("Format"), Medium("Medium");
 
     fun display(value: Float): String = when {
         unit.isNotEmpty() -> "${"%.1f".format(value)}$unit"
@@ -66,7 +70,8 @@ internal data class Edit(
             .put("negative_width", formatWidths[format].toDouble())
             .put("exposure", get(Tool.CameraExposure).toDouble())
             .put("grain", get(Tool.Grain).toDouble())
-            .put("grain_colour", 0.25)
+            .put("grain_size", get(Tool.GrainSize).toDouble())
+            .put("grain_colour", get(Tool.GrainColour).toDouble())
             .put("print_medium", medium)
             .put("scan_blur", get(Tool.ScanBlur).toDouble())
             .put("scan_aperture", get(Tool.Aperture).toDouble())

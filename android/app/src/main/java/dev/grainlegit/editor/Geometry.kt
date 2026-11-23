@@ -53,6 +53,7 @@ internal class GeometryLayout(val sourceSize: IntSize, geometry: Geometry) {
     private val transform = Matrix()
     private val inverse = Matrix()
     val output: IntSize
+    val fullRegion: Rect
 
     init {
         val oriented = Matrix().apply {
@@ -115,8 +116,16 @@ internal class GeometryLayout(val sourceSize: IntSize, geometry: Geometry) {
         val width = (if (shrunk) floor(spanW).toInt() else spanW.roundToInt()).coerceAtLeast(1)
         val height = (if (shrunk) floor(spanH).toInt() else spanH.roundToInt()).coerceAtLeast(1)
         output = IntSize(width, height)
-        transform.postTranslate(-cx + width / 2f, -cy + height / 2f)
+        val left = cx - width / 2f
+        val top = cy - height / 2f
+        transform.postTranslate(-left, -top)
         check(transform.invert(inverse))
+        fullRegion = Rect(
+            floor(bounds.left - left).toInt().coerceAtMost(0),
+            floor(bounds.top - top).toInt().coerceAtMost(0),
+            ceil(bounds.right - left).toInt().coerceAtLeast(width),
+            ceil(bounds.bottom - top).toInt().coerceAtLeast(height),
+        )
     }
 
     private fun contains(x: Float, y: Float, width: Float, height: Float): Boolean {

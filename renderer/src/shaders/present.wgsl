@@ -31,7 +31,7 @@ fn surface_color(srgb: vec3<f32>) -> vec4<f32> {
 fn photo(@builtin(position) screen: vec4<f32>) -> @location(0) vec4<f32> {
     let source = (screen.xy - view.viewport_center) / view.scale + view.image_center;
     if any(source < vec2(0.0)) || any(source >= view.full_size) {
-        return surface_color(vec3(0.043, 0.039, 0.047));
+        discard;
     }
     let uv = (source - view.texture_origin) / view.texture_span;
     return surface_color(textureSampleLevel(pixels, filtering, uv, 0.0).rgb);

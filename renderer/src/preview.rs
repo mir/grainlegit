@@ -196,7 +196,15 @@ impl Presenter {
             None
         };
 
-        let channel = if self.srgb { 0.0032 } else { 0.041 };
+        // Match the editor background when the photo does not fill the viewport.
+        let [r, g, b] = [18.0, 21.0, 17.0].map(|byte| {
+            let value: f64 = byte / 255.0;
+            if self.srgb {
+                ((value + 0.055) / 1.055).powf(2.4)
+            } else {
+                value
+            }
+        });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("present photo"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -204,12 +212,7 @@ impl Presenter {
                 resolve_target: None,
                 depth_slice: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: channel,
-                        g: channel,
-                        b: channel,
-                        a: 1.0,
-                    }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
