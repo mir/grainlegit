@@ -1,13 +1,44 @@
 # Grainlegit
 
-Grainlegit brings Filmgrain’s colour-negative and optical-print simulation to Android. It opens JPEG and HEIF photos, edits them on-device, and exports full-resolution sRGB JPEGs. See the [Android implementation plan](PLAN.md) for the device and performance targets.
+Grainlegit brings Filmgrain’s colour-negative and optical-print simulation to Android. It opens JPEG and HEIF photos, edits them on-device, and exports full-resolution sRGB JPEGs.
+
+## Android designs
+
+<p align="center">
+  <a href="design/previews/adjust.webp"><img src="design/previews/adjust.webp" width="31%" alt="Adjust panel with the Vibrance ruler beneath a photo of a red car"></a>
+  <a href="design/previews/grain.webp"><img src="design/previews/grain.webp" width="31%" alt="Portra 400 grain on the red car at 100% zoom"></a>
+  <a href="design/previews/optical-print.webp"><img src="design/previews/optical-print.webp" width="31%" alt="Optical Print panel with Paper selected and the print-exposure ruler visible"></a>
+  <br>
+  <sub>FigCraft prototype · Adjust, grain at 100%, and optical print on paper</sub>
+</p>
+
+- The interactive prototype covers photo picking, the editor, crop, and export. Open it in FigCraft and use Present mode. Choose **Open photo and edit** to start at Recent edits, or **Try the editor** to go straight to Adjust. [Android editor prototype](design/android-editor.figcraft)
+- The implementation plan describes the Vulkan renderer, preview scheduling, tiled export, and Xiaomi 17 Ultra performance targets. [Android implementation plan](PLAN.md)
+
+### Editor implementation status
+
+| Area | In the Android app | Prototype features still missing |
+| --- | --- | --- |
+| Opening photos | The Android photo picker opens JPEG and HEIF files. The editor restores the last photo, its edit settings, and its grain seed. | The **Recent edits** screen and reopening earlier edits. |
+| Preview and Adjust | **Fit**, **100%**, pinch and pan, hold-to-compare, undo and redo, Light/Colour/Detail tools, RGB and per-channel curves, and crop with aspect ratios, straightening, perspective, rotation, flips, and **Constrain Crop**. White balance applies when you tap a neutral area. | The dedicated **White balance** screen with a sampled-colour preview and **Apply**, and the picker sheets for adjustment groups and crop ratios. |
+| Negative | Film stock, six formats, camera exposure, and grain amount. Grain size uses the renderer’s 1× default and grain colour is fixed at 25%. | Independent **Grain size** and **Grain colour** controls, and the dedicated stock and format chooser sheets. |
+| Optical Print | Direct scan, paper and print film, with print exposure, enlargement, enlarger blur, print grain, filtration, and scan optics in the tool strip. | The dedicated **Print settings** sheet. |
+| Export | The export arrow starts a full-resolution sRGB JPEG save with progress and cancellation. A message confirms the save. | The **Export photo** confirmation sheet and the separate **Photo saved** dialog. |
+
+### Remaining implementation plan milestones
+
+- **Preview scheduling.** The GPU preview processes the latest requested edit and loads a full-resolution crop at 100% after the viewport settles. Speculative prefetch for nearby slider stops is still pending.
+- **Device qualification.** Record Xiaomi 17 Ultra touch-to-display and settle times in both Fit and 100%, against the warm-edit targets of 100 ms for a grain-bearing update and 250 ms for a settled crop. Check sustained memory use, rotation, backgrounding, surface recovery, and framing during compare and at the edges of the 100% view. Other GPUs still need on-device qualification.
+- **Import and export validation.** Add a checked-in wide-gamut HEIF decoder test. The renderer has desktop parity tests for viewport crops and tiles. The remaining Android checks include comparing the 100% preview with pre-encoding export pixels, documenting 12 MP and 50 MP end-to-end exports, and stress-testing 200 MP to determine the supported maximum.
+- **Later rendering work.** RAW/DNG development and broader spectral colour modelling are planned follow-ups.
+
+## Repository layout
 
 | Path | Purpose |
 | --- | --- |
 | `android/` | Gradle project and Kotlin/Compose editor. Open this directory in Android Studio. |
 | `renderer/` | Rust JNI renderer, `wgpu` pipelines, and WGSL shaders, with its own Cargo lockfile and toolchain. |
 | `scripts/` | SDK setup, build, install, and native-library verification. Gradle invokes `build-android-native` when packaging the app. |
-| [`design/android-editor.figcraft`](design/android-editor.figcraft) | Editable Android prototype. Open in FigCraft and choose **Try the editor** in Present mode. |
 | `src/` | Portable Rust settings, defaults, and stock selection |
 | `profiles/` | Emulsion parameters shared by Rust and the reference renderers, with [calibration sources and method](profiles/grain-calibration.md) |
 | `reference/` | Python CLI and CPU model, Apple Silicon Metal renderer, calibration script, and renderer parity tests |
@@ -24,7 +55,7 @@ scripts/android devices   # check that adb sees the phone
 scripts/android run       # build, install, and launch
 ```
 
-The first device target is the Xiaomi 17 Ultra. Enable USB debugging, connect the phone, and accept its debugging prompt. Open a photo, tap **100%** for a source-pixel crop, and hold the half-circle button to see the original. Use **Fit** to return to the full frame. **Adjust** includes tone, colour, detail, curves, and crop. **Negative** selects film stock, format, camera exposure, and grain. **Optical Print** includes direct scan, paper, print film, and scan optics.
+The first device target is the Xiaomi 17 Ultra. Enable USB debugging, connect the phone, and accept its debugging prompt. Open a photo, tap **100%** for a source-pixel crop, and hold the half-circle button to see the original. Use **Fit** to return to the full frame.
 
 The app keeps the original intact and saves the last edit and its seed locally. Use the export arrow to save a JPEG to `Pictures/Grainlegit`. The exporter decodes and renders padded tiles and stages RGB rows in the app cache before encoding. Allow approximately three bytes of temporary disk space per output pixel, plus space for the JPEG. Cancelled exports remove their temporary files and any unpublished MediaStore entry.
 
