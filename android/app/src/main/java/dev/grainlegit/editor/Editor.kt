@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.systemGestures
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -145,7 +146,6 @@ internal fun Editor() {
     var samplePoint by remember { mutableStateOf<IntOffset?>(null) }
     var sample by remember { mutableStateOf<BalanceSample?>(null) }
     var sheet by remember { mutableStateOf<Sheet?>(null) }
-    var printDraft by remember { mutableStateOf<Edit?>(null) }
     var erase by remember { mutableStateOf<EraseState?>(null) }
     val eraseEngine = remember(context) { EraseEngine.get(context) }
     val osorAssets = remember(context) { if (OsorAssets.supported) OsorAssets(context.applicationContext) else null }
@@ -242,7 +242,6 @@ internal fun Editor() {
 
     fun dismissSheet() {
         sheet = null
-        printDraft = null
     }
 
     fun selectTool(selected: Tool) {
@@ -373,6 +372,15 @@ internal fun Editor() {
 
     val active = current
 
+    // The edit Auto grain would produce: grain size sized for visibility at Fit, amount restored if off.
+    val autoGrain = remember(edit.with(Tool.GrainSize, Tool.GrainSize.initial), active?.layout?.output) {
+        val output = active?.layout?.output
+        val base = if (edit[Tool.Grain] < 0.05f) edit.with(Tool.Grain, Tool.Grain.initial) else edit
+        if (output == null) null else runCatching {
+            base.with(Tool.GrainSize, NativeRenderer.autoGrainSize(base.nativeSettings(), output.width, output.height))
+        }.getOrNull()
+    }
+
     // Let the preview settle first. Select and Remove share these models with the warm-up.
     LaunchedEffect(active != null) {
         if (active == null) return@LaunchedEffect
@@ -441,7 +449,9 @@ internal fun Editor() {
         val minimum = with(density) { 24.dp.roundToPx() }
         val side = maxOf(minimum, maxOf(system.getLeft(density, direction), system.getRight(density, direction)) + gap)
             .coerceAtMost(viewport.width / 3)
-        val end = maxOf(minimum, maxOf(system.getTop(density), system.getBottom(density)) + gap)
+        // The top bar floats over the photo, so the crop window stays below it.
+        val bar = with(density) { 48.dp.roundToPx() } + gap
+        val end = maxOf(bar, maxOf(system.getTop(density), system.getBottom(density)) + gap)
             .coerceAtMost(viewport.height / 3)
         IntSize(viewport.width - 2 * side, viewport.height - 2 * end)
     } else viewport
@@ -449,7 +459,7 @@ internal fun Editor() {
     val zoomEnabled = !cropping && !picking && curveDraft == null && active?.geometry == edit.geometry
     val view = photoSize?.let { ((if (zoomEnabled) zoom else null) ?: Camera(fit, it.center())).constrain(it, viewport, fit) }
     val fullResolution = zoomEnabled && view?.scale == 1f && zoom != null
-    val previewEdit = printDraft ?: edit.copy(curves = curveDraft ?: edit.curves, balance = sample?.gains ?: edit.balance)
+    val previewEdit = edit.copy(curves = curveDraft ?: edit.curves, balance = sample?.gains ?: edit.balance)
     val nativeEdit = remember(previewEdit) { previewEdit.nativeSettings() }
     SideEffect {
         val previewCamera = if (warp == null) view?.pixelAligned(viewport) else view
@@ -697,61 +707,6 @@ internal fun Editor() {
             val erasing = erase
             val editingTool = cropDraft != null || curves != null || picking || erasing != null
             val sampled = sample?.takeIf { it.point == samplePoint }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                EditorAction(if (editingTool) "Cancel" else "Recent edits",
-                    if (editingTool) EditorSymbol.Close else EditorSymbol.Back, enabled = !exporting, action = ::goBack)
-                if (editingTool) {
-                    val heading = when {
-                        cropDraft != null -> "Crop"
-                        erasing != null -> "Erase"
-                        curves != null -> "Curves"
-                        else -> "White balance"
-                    }
-                    Text(heading, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                    if (curves != null || picking) {
-                        TextButton(onClick = {
-                            if (curves == null) resetSample()
-                            else curveDraft = curves.mapIndexed { index, curve ->
-                                if (index == curveChannel) neutralCurve else curve
-                            }
-                        }) { Text("Reset") }
-                    }
-                    TextButton(enabled = (!picking || sampled != null) && erasing?.busy == null, onClick = {
-                        when {
-                            erasing != null -> {
-                                commit(edit.copy(retouches = erasing.draft))
-                                erase = null
-                            }
-                            cropDraft != null -> {
-                                if (cropDraft != edit.geometry) zoom = null
-                                commit(edit.copy(geometry = cropDraft))
-                                crop = null
-                            }
-                            curves != null -> {
-                                commit(edit.copy(curves = curves))
-                                curveDraft = null
-                            }
-                            sampled != null -> {
-                                commit(edit.copy(balance = sampled.gains))
-                                picking = false
-                                resetSample()
-                            }
-                        }
-                    }) { Text("Apply") }
-                } else {
-                    EditorAction("Undo", EditorSymbol.Undo, undo.isNotEmpty()) {
-                        redo.add(edit)
-                        edit = undo.removeAt(undo.lastIndex)
-                    }
-                    EditorAction("Redo", EditorSymbol.Redo, redo.isNotEmpty()) {
-                        undo.add(edit)
-                        edit = redo.removeAt(redo.lastIndex)
-                    }
-                    Spacer(Modifier.weight(1f))
-                    EditorAction("Export JPEG", EditorSymbol.Export, active != null && !exporting) { sheet = Sheet.Export }
-                }
-            }
-
             Box(Modifier.fillMaxWidth().weight(1f).background(background)
                 .onSizeChanged { viewport = it }.then(gestures), contentAlignment = Alignment.Center) {
                 PreviewSurface(renderer)
@@ -767,10 +722,88 @@ internal fun Editor() {
                         SampleTarget(topLeft + Offset(point.x.toFloat(), point.y.toFloat()) * fit)
                     }
                 }
+                if (erasing != null || (active != null && cropDraft == null && curves == null && !picking)) Row(
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    EditorChip("Fit", zoom == null, Modifier.width(48.dp), plain = true, highlightOnly = true,
+                        overlay = true) { zoom = null }
+                    EditorChip("100%", fullResolution, Modifier.width(55.dp), plain = true, highlightOnly = true,
+                        overlay = true) {
+                        if (photoSize != null) zoom = Camera(1f, view?.center ?: photoSize.center())
+                    }
+                    Spacer(Modifier.weight(1f))
+                    CompareControl(comparing) { comparing = it }
+                }
+                Row(
+                    Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    EditorAction(if (editingTool) "Cancel" else "Recent edits",
+                        if (editingTool) EditorSymbol.Close else EditorSymbol.Back, enabled = !exporting, overlay = true,
+                        action = ::goBack)
+                    if (editingTool) {
+                        val heading = when {
+                            cropDraft != null -> "Crop"
+                            erasing != null -> "Erase"
+                            curves != null -> "Curves"
+                            else -> "White balance"
+                        }
+                        Box(Modifier.weight(1f)) {
+                            Text(heading, Modifier.background(overlayColor, CircleShape)
+                                .padding(horizontal = 14.dp, vertical = 6.dp), style = MaterialTheme.typography.titleMedium)
+                        }
+                        if (curves != null || picking) {
+                            TextButton(modifier = overlayButton, onClick = {
+                                if (curves == null) resetSample()
+                                else curveDraft = curves.mapIndexed { index, curve ->
+                                    if (index == curveChannel) neutralCurve else curve
+                                }
+                            }) { Text("Reset") }
+                        }
+                        TextButton(modifier = overlayButton,
+                            enabled = (!picking || sampled != null) && erasing?.busy == null, onClick = {
+                            when {
+                                erasing != null -> {
+                                    commit(edit.copy(retouches = erasing.draft))
+                                    erase = null
+                                }
+                                cropDraft != null -> {
+                                    if (cropDraft != edit.geometry) zoom = null
+                                    commit(edit.copy(geometry = cropDraft))
+                                    crop = null
+                                }
+                                curves != null -> {
+                                    commit(edit.copy(curves = curves))
+                                    curveDraft = null
+                                }
+                                sampled != null -> {
+                                    commit(edit.copy(balance = sampled.gains))
+                                    picking = false
+                                    resetSample()
+                                }
+                            }
+                        }) { Text("Apply") }
+                    } else {
+                        EditorAction("Undo", EditorSymbol.Undo, undo.isNotEmpty(), overlay = true) {
+                            redo.add(edit)
+                            edit = undo.removeAt(undo.lastIndex)
+                        }
+                        EditorAction("Redo", EditorSymbol.Redo, redo.isNotEmpty(), overlay = true) {
+                            undo.add(edit)
+                            edit = redo.removeAt(redo.lastIndex)
+                        }
+                        Spacer(Modifier.weight(1f))
+                        EditorAction("Export JPEG", EditorSymbol.Export, active != null && !exporting, overlay = true) {
+                            sheet = Sheet.Export
+                        }
+                    }
+                }
+
                 val status = photoError ?: renderError ?: shownEraseWork?.title ?: erasing?.message
                     ?: "Opening photo…".takeIf { opening || (active == null && original != null) }
                 if (status != null) Surface(
-                    modifier = if (shownEraseWork != null) Modifier.align(Alignment.TopCenter).padding(top = 12.dp)
+                    modifier = if (shownEraseWork != null) Modifier.align(Alignment.TopCenter).padding(top = 60.dp)
                         else Modifier,
                     color = panelColor, shape = RoundedCornerShape(12.dp),
                 ) {
@@ -792,14 +825,6 @@ internal fun Editor() {
 
             when {
                 erasing != null -> {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        EditorChip("Fit", zoom == null, Modifier.width(48.dp), plain = true, highlightOnly = true) { zoom = null }
-                        EditorChip("100%", fullResolution, Modifier.width(55.dp), plain = true, highlightOnly = true) {
-                            if (photoSize != null) zoom = Camera(1f, view?.center ?: photoSize.center())
-                        }
-                        Spacer(Modifier.weight(1f))
-                        CompareControl(comparing) { comparing = it }
-                    }
                     EraseControls(erasing, modelControls = {
                         if (osorAssets != null) {
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
@@ -844,14 +869,6 @@ internal fun Editor() {
                         modifier = Modifier.padding(top = 12.dp))
                 }
                 active != null -> {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        EditorChip("Fit", zoom == null, Modifier.width(48.dp), plain = true, highlightOnly = true) { zoom = null }
-                        EditorChip("100%", fullResolution, Modifier.width(55.dp), plain = true, highlightOnly = true) {
-                            if (photoSize != null) zoom = Camera(1f, view?.center ?: photoSize.center())
-                        }
-                        Spacer(Modifier.weight(1f))
-                        CompareControl(comparing) { comparing = it }
-                    }
                     val activeTool = when (tool) {
                         Tool.Stock, Tool.Format, Tool.Medium -> panel.defaultTool
                         else -> tool
@@ -862,11 +879,9 @@ internal fun Editor() {
                     }, activeTool, edit, ::selectTool,
                         onCrop = { cropTool = Tool.Straighten; crop = edit.geometry },
                         onErase = { erase = EraseState(active.layout.output, edit.retouches) },
-                        showSheet = {
-                            if (it == Sheet.PrintSettings) printDraft = edit
-                            sheet = it
-                        },
-                        change = { edit = it }, start = { startEdit = edit }, finish = ::finishEdit, commit = ::commit)
+                        showSheet = { sheet = it },
+                        change = { edit = it }, start = { startEdit = edit }, finish = ::finishEdit, commit = ::commit,
+                        autoGrain = autoGrain)
                 }
             }
         }
@@ -915,12 +930,6 @@ internal fun Editor() {
                     crop = crop?.copy(ratio = index)
                     dismissSheet()
                 }
-            }
-        }
-        Sheet.PrintSettings -> printDraft?.let { draft ->
-            PrintSettingsSheet(draft, { printDraft = it }, ::dismissSheet) {
-                commit(draft)
-                dismissSheet()
             }
         }
         Sheet.Export -> EditorSheet("Export photo", ::dismissSheet, "Save copy", {
@@ -1045,3 +1054,5 @@ private fun SampleTarget(point: Offset) {
         drawLine(ink, point - Offset(0f, arm), point + Offset(0f, arm), 1.dp.toPx())
     }
 }
+
+private val overlayButton = Modifier.background(overlayColor, CircleShape)

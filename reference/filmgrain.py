@@ -60,7 +60,7 @@ def parse_args() -> tuple[argparse.Namespace, Settings]:
     negative = parser.add_argument_group("Negative")
     negative.add_argument("--negative-stock", choices=NEGATIVE_STOCKS, help="negative stock profile (default: generic)")
     negative.add_argument("--grain", type=bounded(0, 3), help="grain amount, 0–3 (default: 1)")
-    negative.add_argument("--grain-size", type=bounded(0.1, 10), help="cloud diameter multiplier (default: 1)")
+    negative.add_argument("--grain-size", type=bounded(0.1, 16), help="cloud diameter multiplier (default: 1)")
     negative.add_argument("--grain-load", type=bounded(0.1, 8), help="dye per cloud at fixed size (default: 1)")
     negative.add_argument("--grain-colour", type=bounded(0, 1), help="coloured grain fraction, 0–1 (default: 1)")
     negative.add_argument("--coarse-fraction", type=bounded(0, 1), help="share of density from coarse clouds")

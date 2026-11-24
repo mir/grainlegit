@@ -23,7 +23,8 @@ internal enum class Tool(
     WhiteBalance("WB picker"), Sharpen("Sharpen", 0f, 2f),
     CameraExposure("Negative exposure", -2f, 2f, unit = " EV"),
     Grain("Grain amount", 0f, 3f, 1f, 60, "×"),
-    GrainSize("Grain size", 0.1f, 10f, 1f, 14, "×", logarithmic = true),
+    // 0.1–15.85× in tenth-decade stops keeps 1× on a stop and leaves room for Auto on small photos.
+    GrainSize("Grain size", 0.1f, 15.85f, 1f, 22, "×", logarithmic = true),
     GrainColour("Grain colour", 0f, 1f, 0.25f, 100),
     GrainLoad("Dye per cloud", 0.1f, 8f, 1f, 158, "×"),
     CoarseFraction("Coarse fraction", 0f, 1f, 0.24f, 100),

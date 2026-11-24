@@ -112,7 +112,7 @@ impl Settings {
                 };
             }
             "--grain" => self.grain = bounded(flag, value, 0.0, 3.0)?,
-            "--grain-size" => self.grain_size = bounded(flag, value, 0.1, 10.0)?,
+            "--grain-size" => self.grain_size = bounded(flag, value, 0.1, 16.0)?,
             "--grain-load" => self.grain_load = bounded(flag, value, 0.1, 8.0)?,
             "--grain-colour" => self.grain_colour = bounded(flag, value, 0.0, 1.0)?,
             "--coarse-fraction" => self.coarse_fraction = bounded(flag, value, 0.0, 1.0)?,

@@ -84,6 +84,40 @@ fn cloud_radius(sigma: f64) -> usize {
     }
 }
 
+/// Reference photo area for Auto grain: the editor's viewport on a 1200 × 2608 px phone with
+/// the bottom panel open. Fit shrinks photos to this size and never enlarges them.
+const AUTO_VIEW: [f64; 2] = [1200.0, 1500.0];
+/// Fine-cloud sigma, in screen pixels at Fit, that viewers picked as just clearly visible
+/// across 0.3–200 MP photos.
+const AUTO_SCREEN_SIGMA: f64 = 1.1;
+
+/// Grain size multiplier that makes the negative's fine clouds visible at Fit.
+///
+/// The result accounts for the stock's cloud sizes, the format width, the per-layer size
+/// multipliers and the grain amount, and stays within the renderer's halo limit.
+pub fn auto_grain_size(width: u32, height: u32, settings: &Settings) -> f64 {
+    let [width, height] = [f64::from(width.max(1)), f64::from(height.max(1))];
+    let fit = (AUTO_VIEW[0] / width).min(AUTO_VIEW[1] / height).min(1.0);
+    let target = AUTO_SCREEN_SIGMA / fit;
+    let unit = Settings {
+        grain: settings.grain.max(1e-6),
+        grain_size: 1.0,
+        ..*settings
+    };
+    let edge = width.max(height) as u32;
+    let layers = &material(&unit, false).layers;
+    let fine = (0..3)
+        .map(|layer| sigma(edge, &unit, false, layer, layers[layer][0][0]))
+        .sum::<f64>()
+        / 3.0;
+    let widest = (0..3)
+        .flat_map(|layer| layers[layer].iter().map(move |cloud| (layer, cloud[0])))
+        .map(|(layer, diameter)| sigma(edge, &unit, false, layer, diameter))
+        .fold(0.0, f64::max);
+    let limit = (MAX_HALO as f64 - 1.0) / (4.0 * widest);
+    (target / fine).min(limit).max(0.1)
+}
+
 pub fn enlarger_sigma(edge: u32, settings: &Settings) -> f64 {
     settings.enlarger_blur * f64::from(edge)
         / (1000.0 * settings.negative_width * settings.enlargement)
@@ -332,5 +366,91 @@ fn fill_aliases(rate: f64, aliases: &mut [u32]) {
             large[llen] = alias;
             llen += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fit_sigma(width: u32, height: u32, settings: &Settings) -> f64 {
+        let size = auto_grain_size(width, height, settings);
+        let sized = Settings {
+            grain_size: size,
+            ..*settings
+        };
+        let edge = width.max(height);
+        let layers = &material(&sized, false).layers;
+        let fine = (0..3)
+            .map(|l| sigma(edge, &sized, false, l, layers[l][0][0]))
+            .sum::<f64>()
+            / 3.0;
+        let fit = (1200.0 / f64::from(width))
+            .min(1500.0 / f64::from(height))
+            .min(1.0);
+        fine * fit
+    }
+
+    #[test]
+    fn auto_grain_is_visible_at_fit_for_every_resolution() {
+        let settings = Settings::default();
+        for [width, height] in [
+            [671, 447],
+            [1225, 817],
+            [4243, 2829],
+            [17321, 11547],
+            [3000, 4000],
+        ] {
+            let seen = fit_sigma(width, height, &settings);
+            assert!((seen - 1.1).abs() < 1e-9, "{width}×{height}: {seen}");
+        }
+    }
+
+    #[test]
+    fn auto_grain_matches_the_calibration_picks() {
+        let settings = Settings::default();
+        // Generic stock on 35 mm: about 7.5× above the viewport width, larger on small photos.
+        let large = auto_grain_size(8660, 5773, &settings);
+        assert!((7.0..8.0).contains(&large), "{large}");
+        assert!((auto_grain_size(17321, 11547, &settings) - large).abs() < 1e-9);
+        let small = auto_grain_size(671, 447, &settings);
+        assert!((13.0..14.0).contains(&small), "{small}");
+    }
+
+    #[test]
+    fn auto_grain_follows_amount_stock_and_format() {
+        let base = Settings::default();
+        let size = auto_grain_size(4000, 3000, &base);
+        let doubled = auto_grain_size(4000, 3000, &Settings { grain: 4.0, ..base });
+        assert!((doubled - size / 2.0).abs() < 1e-9);
+        let medium = auto_grain_size(
+            4000,
+            3000,
+            &Settings {
+                negative_width: 56.0,
+                ..base
+            },
+        );
+        assert!((medium - size * 56.0 / 36.0).abs() < 1e-9);
+        let ektar = Settings {
+            negative_stock: 3,
+            ..base
+        };
+        assert!(auto_grain_size(4000, 3000, &ektar) > size);
+        assert!((fit_sigma(4000, 3000, &ektar) - 1.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn auto_grain_stays_within_the_halo_limit() {
+        let settings = Settings {
+            negative_width: 245.0,
+            ..Settings::default()
+        };
+        let size = auto_grain_size(17321, 11547, &settings);
+        let sized = Settings {
+            grain_size: size,
+            ..settings
+        };
+        assert!(padding(17321, &sized).is_ok());
     }
 }

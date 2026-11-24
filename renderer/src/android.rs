@@ -543,6 +543,23 @@ pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_padding(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_autoGrainSize(
+    env: JNIEnv,
+    _class: JClass,
+    edit: JString,
+    width: jint,
+    height: jint,
+) -> jfloat {
+    call(env, |env| {
+        let edit = parse_edit(env, &edit)?;
+        if width <= 0 || height <= 0 {
+            return Err("Invalid photo size".into());
+        }
+        Ok(crate::emulsion::auto_grain_size(width as u32, height as u32, &edit.film) as jfloat)
+    })
+}
+
+#[no_mangle]
 pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_exportTile(
     env: JNIEnv,
     _class: JClass,

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -57,13 +58,12 @@ import kotlin.math.roundToInt
 
 internal enum class Panel(val title: String, val defaultTool: Tool) {
     Adjust("Adjust", Tool.Exposure), Negative("Grain", Tool.CameraExposure),
-    Print("Print", Tool.PrintExposure),
 }
 
 // Retained for activity state saved by Android 0.2.
 internal enum class ToolGroup { Light, Colour, Detail }
 
-internal enum class Sheet { Stock, Format, Ratio, PrintSettings, Export, Saved }
+internal enum class Sheet { Stock, Format, Ratio, Export, Saved }
 
 private val adjustmentTools = listOf(
     Tool.Exposure, Tool.Brightness, Tool.Highlights, Tool.Shadows, Tool.Contrast, Tool.Whites, Tool.Blacks, Tool.Curves,
@@ -73,14 +73,16 @@ private val grainTools = listOf(
     Tool.CameraExposure, Tool.Grain, Tool.GrainSize, Tool.GrainColour, Tool.GrainLoad, Tool.CoarseFraction,
     Tool.RedCloudSize, Tool.GreenCloudSize, Tool.BlueCloudSize, Tool.Development,
 )
-private val opticalTools = listOf(Tool.Enlargement, Tool.EnlargerBlur, Tool.PrintGrain, Tool.Cyan, Tool.Magenta, Tool.Yellow)
-private val scanTools = listOf(Tool.ScanBlur, Tool.Aperture)
+
+// Translucent black behind controls that float over the photo.
+internal val overlayColor = Color.Black.copy(alpha = 0.6f)
 
 @Composable
 internal fun EditControls(
     panel: Panel, setPanel: (Panel) -> Unit, tool: Tool, edit: Edit,
     selectTool: (Tool) -> Unit, onCrop: () -> Unit, onErase: () -> Unit, showSheet: (Sheet) -> Unit,
     change: (Edit) -> Unit, start: () -> Unit, finish: () -> Unit, commit: (Edit) -> Unit,
+    autoGrain: Edit? = null,
 ) {
     Column(Modifier.fillMaxWidth().background(panelColor).padding(horizontal = 16.dp)) {
         HorizontalDivider(color = dividerColor)
@@ -92,11 +94,7 @@ internal fun EditControls(
         } else {
             val coarse = tool == Tool.CoarseFraction
             val usingStockMix = coarse && edit.useCoarseProfile
-            val disabledHint = when {
-                usingStockMix -> "Using the stock’s fine and coarse mix."
-                panel == Panel.Print && edit.medium == 0 -> "Choose Paper or Print film."
-                else -> null
-            }
+            val disabledHint = if (usingStockMix) "Using the stock’s fine and coarse mix." else null
             Ruler(tool, edit[tool], disabledHint == null,
                 start, { change(edit.with(tool, it)) }, finish,
                 disabledHint = disabledHint,
@@ -116,7 +114,6 @@ internal fun EditControls(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 EditorChip("Crop", onClick = onCrop)
-                EditorChip("Erase", onClick = onErase)
                 adjustmentTools.forEach { entry ->
                     EditorChip(entry.title, selected = entry == tool, onClick = { selectTool(entry) })
                 }
@@ -125,25 +122,18 @@ internal fun EditControls(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                if (autoGrain != null) {
+                    AutoGrainButton(applied = autoGrain == edit) {
+                        commit(autoGrain)
+                        selectTool(Tool.GrainSize)
+                    }
+                }
                 val name = stockNames[stockIds.indexOf(edit.stockId).coerceAtLeast(0)]
                 EditorChip(name, chevron = true, onClick = { showSheet(Sheet.Stock) })
                 EditorChip(formatNames[edit.format], chevron = true, onClick = { showSheet(Sheet.Format) })
                 grainTools.forEach { entry ->
                     EditorChip(entry.chipTitle(), selected = entry == tool, onClick = { selectTool(entry) })
                 }
-            }
-            Panel.Print -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(
-                    Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    printMedia.forEachIndexed { index, medium ->
-                        EditorChip(if (index == 0) "Direct" else medium, selected = edit.medium == index) {
-                            commit(edit.copy(medium = index))
-                        }
-                    }
-                }
-                EditorChip("Settings", chevron = true, onClick = { showSheet(Sheet.PrintSettings) })
             }
         }
         HorizontalDivider(Modifier.padding(top = 6.dp), color = dividerColor)
@@ -155,6 +145,22 @@ internal fun EditControls(
                 EditorChip(it.title, selected = panel == it, modifier = Modifier.weight(1f), plain = true,
                     role = Role.Tab, onClick = { if (panel != it) setPanel(it) })
             }
+            EditorChip("Erase", modifier = Modifier.weight(1f), plain = true, onClick = onErase)
+        }
+    }
+}
+
+// Sets grain size so the grain is clearly visible with the whole photo on screen.
+@Composable
+private fun AutoGrainButton(applied: Boolean, apply: () -> Unit) {
+    Box(
+        Modifier.size(48.dp).selectable(selected = applied, role = Role.Button, onClick = apply)
+            .semantics { contentDescription = "Auto grain" },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.size(34.dp).background(if (applied) selectedColor else controlColor, RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center) {
+            Glyph(EditorSymbol.Auto, if (applied) accent else ink, Modifier.size(20.dp))
         }
     }
 }
@@ -179,7 +185,8 @@ private fun ToolStrip(tools: List<Tool>, selected: Tool, select: (Tool) -> Unit,
 @Composable
 internal fun EditorChip(
     label: String, selected: Boolean = false, modifier: Modifier = Modifier, plain: Boolean = false,
-    chevron: Boolean = false, role: Role = Role.Button, highlightOnly: Boolean = false, onClick: () -> Unit,
+    chevron: Boolean = false, role: Role = Role.Button, highlightOnly: Boolean = false, overlay: Boolean = false,
+    onClick: () -> Unit,
 ) {
     val style = MaterialTheme.typography.labelLarge
     val shape = RoundedCornerShape(10.dp)
@@ -191,6 +198,7 @@ internal fun EditorChip(
             Modifier.then(if (plain) Modifier.fillMaxWidth() else Modifier)
                 .height(34.dp).background(when {
                     selected && !highlightOnly -> selectedColor
+                    overlay -> overlayColor
                     plain -> Color.Transparent
                     else -> controlColor
                 }, shape)
@@ -249,7 +257,7 @@ internal fun CropControls(
     }
 }
 
-internal enum class EditorSymbol { Down, Close, Back, Undo, Redo, Export, Compare, Check, Rotate, FlipX, FlipY }
+internal enum class EditorSymbol { Down, Close, Back, Undo, Redo, Export, Compare, Check, Rotate, FlipX, FlipY, Auto }
 
 @Composable
 private fun Glyph(symbol: EditorSymbol, color: Color, modifier: Modifier = Modifier.size(22.dp)) {
@@ -293,6 +301,10 @@ private fun Glyph(symbol: EditorSymbol, color: Color, modifier: Modifier = Modif
                 line(12f, 3f, 12f, 21f); line(9f, 6f, 3f, 18f, 9f, 18f, 9f, 6f)
                 line(15f, 6f, 21f, 18f, 15f, 18f, 15f, 6f)
             }
+            EditorSymbol.Auto -> {
+                line(11f, 4f, 12.8f, 10.2f, 19f, 12f, 12.8f, 13.8f, 11f, 20f, 9.2f, 13.8f, 3f, 12f, 9.2f, 10.2f, 11f, 4f)
+                line(19f, 2.5f, 19f, 7.5f); line(16.5f, 5f, 21.5f, 5f)
+            }
             EditorSymbol.FlipY -> {
                 line(3f, 12f, 21f, 12f); line(6f, 9f, 18f, 3f, 18f, 9f, 6f, 9f)
                 line(6f, 15f, 18f, 21f, 18f, 15f, 6f, 15f)
@@ -306,10 +318,14 @@ private fun Glyph(symbol: EditorSymbol, color: Color, modifier: Modifier = Modif
 
 @Composable
 internal fun EditorAction(
-    label: String, symbol: EditorSymbol, enabled: Boolean = true, selected: Boolean = false, action: () -> Unit,
+    label: String, symbol: EditorSymbol, enabled: Boolean = true, selected: Boolean = false, overlay: Boolean = false,
+    action: () -> Unit,
 ) {
     IconButton(onClick = action, enabled = enabled, modifier = Modifier.semantics { contentDescription = label }) {
-        Glyph(symbol, if (!enabled) muted.copy(alpha = 0.55f) else if (selected) accent else ink)
+        Box(if (overlay) Modifier.size(38.dp).background(overlayColor, CircleShape) else Modifier,
+            contentAlignment = Alignment.Center) {
+            Glyph(symbol, if (!enabled) muted.copy(alpha = 0.55f) else if (selected) accent else ink)
+        }
     }
 }
 
@@ -333,7 +349,9 @@ internal fun CompareControl(comparing: Boolean, change: (Boolean) -> Unit) {
         },
         contentAlignment = Alignment.Center,
     ) {
-        Glyph(EditorSymbol.Compare, if (comparing) accent else ink)
+        Box(Modifier.size(38.dp).background(overlayColor, CircleShape), contentAlignment = Alignment.Center) {
+            Glyph(EditorSymbol.Compare, if (comparing) accent else ink)
+        }
     }
 }
 
@@ -506,12 +524,3 @@ internal fun SheetChoice(title: String, selected: Boolean, subtitle: String? = n
     }
 }
 
-@Composable
-internal fun PrintSettingsSheet(draft: Edit, update: (Edit) -> Unit, dismiss: () -> Unit, apply: () -> Unit) {
-    EditorSheet("Print settings", dismiss, "Done", apply) {
-        val tools = if (draft.medium == 0) scanTools else opticalTools + scanTools
-        for (tool in tools) {
-            Ruler(tool, draft[tool], true, {}, { update(draft.with(tool, it)) }, {})
-        }
-    }
-}

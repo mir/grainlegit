@@ -35,6 +35,7 @@ internal object NativeRenderer {
         previewToSource: FloatArray?,
     )
     @JvmStatic external fun padding(edit: String, edge: Int): Int
+    @JvmStatic external fun autoGrainSize(edit: String, width: Int, height: Int): Float
     @JvmStatic external fun exportTile(
         handle: Long, bitmap: Bitmap, x: Int, y: Int, left: Int, top: Int,
         width: Int, height: Int, edge: Int, seed: Long, edit: String,

@@ -14,8 +14,8 @@ android {
         applicationId = "dev.grainlegit.editor"
         minSdk = 36
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.6"
+        versionCode = 7
+        versionName = "0.7"
         ndk.abiFilters.add("arm64-v8a")
     }
 
