@@ -59,7 +59,9 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.Executors
 
 internal enum class EraseMode(val title: String) { Select("Select"), Brush("Brush"), Unbrush("Erase brush") }
@@ -149,8 +151,17 @@ internal class EraseEngine private constructor(context: Context) {
         return model
     }
 
-    suspend fun remove(remover: Remover, selection: RemovalMask, existing: List<Retouch>): List<RemovalCandidate> =
-        withContext(removalWorker) { remover.remove(selection, existing, inpainters) }
+    suspend fun remove(
+        remover: Remover, selection: RemovalMask, existing: List<Retouch>, osorDirectory: File?,
+    ): List<RemovalCandidate> = withContext(removalWorker) {
+        if (osorDirectory == null) {
+            remover.remove(selection, existing, inpainters)
+        } else {
+            Osor(application, osorDirectory) { coroutineContext.ensureActive() }.use { model ->
+                remover.remove(selection, existing, listOf(model))
+            }
+        }
+    }
 
     companion object {
         private var instance: EraseEngine? = null
@@ -167,6 +178,7 @@ internal class EraseState(val output: IntSize, initial: List<Retouch>) {
     var draft by mutableStateOf(initial)
     var mode by mutableStateOf(EraseMode.Select)
     var brush by mutableStateOf(Tool.BrushSize.initial)
+    var preferOsor by mutableStateOf(true)
     var busy by mutableStateOf<EraseWork?>(null)
     var message by mutableStateOf<String?>(null)
     var candidates by mutableStateOf<List<RemovalCandidate>>(emptyList())
@@ -397,7 +409,7 @@ private fun EraseWaves(state: EraseState, view: Camera, viewport: IntSize, matri
 }
 
 @Composable
-internal fun EraseControls(state: EraseState, remove: () -> Unit) {
+internal fun EraseControls(state: EraseState, modelControls: @Composable () -> Unit, remove: () -> Unit) {
     Column(Modifier.fillMaxWidth().background(panelColor).padding(horizontal = 16.dp)) {
         HorizontalDivider(color = dividerColor)
         if (state.mode == EraseMode.Select) {
@@ -424,6 +436,7 @@ internal fun EraseControls(state: EraseState, remove: () -> Unit) {
                 }
             }
         }
+        modelControls()
         HorizontalDivider(Modifier.padding(top = 6.dp), color = dividerColor)
         Row(
             Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically,

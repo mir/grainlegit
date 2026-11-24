@@ -8,7 +8,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.SystemClock
-import android.system.Os
 import android.util.Log
 import java.io.File
 import java.nio.ByteBuffer
@@ -87,12 +86,10 @@ internal class Sam31 private constructor(
         private const val TAG = "Grainlegit"
         private const val INPUT = 1008
         private const val MASK = 288
-        private const val QNN = "QNNExecutionProvider"
         private const val ASSETS = "models/sm8850/sam31"
         private const val ENCODER = "encoder-sm8850.onnx"
         private const val CONTEXT = "encoder-sm8850_qnn.bin"
         private const val DECODER = "click-decoder.onnx"
-        private var registered = false
 
         fun available(context: Context): Boolean =
             Build.SOC_MODEL.equals("SM8850", ignoreCase = true) &&
@@ -102,10 +99,7 @@ internal class Sam31 private constructor(
             val start = SystemClock.elapsedRealtimeNanos()
             val modelDir = stageAssets(context)
             val runtime = OrtEnvironment.getEnvironment()
-            registerQnn(runtime, File(context.applicationInfo.nativeLibraryDir))
-            val npu = runtime.epDevices.first {
-                it.epName == QNN && it.device.type.name == "NPU"
-            }
+            val npu = Qnn.npu(File(context.applicationInfo.nativeLibraryDir))
             val encoder = OrtSession.SessionOptions().use { options ->
                 options.addExecutionProvider(listOf(npu), mapOf(
                     "backend_type" to "htp",
@@ -125,15 +119,6 @@ internal class Sam31 private constructor(
                 encoder.close()
                 throw error
             }
-        }
-
-        @Synchronized
-        private fun registerQnn(runtime: OrtEnvironment, libraryDir: File) {
-            if (registered) return
-            val dspPath = Os.getenv("ADSP_LIBRARY_PATH")
-            Os.setenv("ADSP_LIBRARY_PATH", listOfNotNull(libraryDir.absolutePath, dspPath).joinToString(";"), true)
-            runtime.registerExecutionProviderLibrary(QNN, File(libraryDir, "libonnxruntime_providers_qnn.so").absolutePath)
-            registered = true
         }
 
         // QNN opens the context next to the ONNX wrapper. Stage each signed APK asset once.

@@ -27,12 +27,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.systemGestures
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -144,6 +148,12 @@ internal fun Editor() {
     var printDraft by remember { mutableStateOf<Edit?>(null) }
     var erase by remember { mutableStateOf<EraseState?>(null) }
     val eraseEngine = remember(context) { EraseEngine.get(context) }
+    val osorAssets = remember(context) { if (OsorAssets.supported) OsorAssets(context.applicationContext) else null }
+    var osorInstalled by remember(osorAssets) { mutableStateOf(osorAssets?.installed == true) }
+    var osorLicenseOpen by remember { mutableStateOf(false) }
+    var osorDownload by remember { mutableStateOf<Job?>(null) }
+    var osorProgress by remember { mutableStateOf(0) }
+    var osorDownloadError by remember { mutableStateOf<String?>(null) }
     remember(context) { PatchStore.init(context) }
 
     var zoom by remember { mutableStateOf<Camera?>(null) }
@@ -173,6 +183,27 @@ internal fun Editor() {
     fun finishEdit() {
         startEdit?.takeIf { it != edit }?.let(::rememberUndo)
         startEdit = null
+    }
+
+    fun downloadOsor() {
+        val assets = osorAssets ?: return
+        if (osorDownload != null || osorInstalled) return
+        osorLicenseOpen = false
+        osorDownloadError = null
+        osorProgress = 0
+        osorDownload = scope.launch {
+            try {
+                assets.download { completed -> withContext(Dispatchers.Main) { osorProgress = completed } }
+                osorInstalled = true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.w("Grainlegit", "OSOR download failed", error)
+                osorDownloadError = error.message ?: "Could not download OSOR"
+            } finally {
+                osorDownload = null
+            }
+        }
     }
 
     fun saveCurrent() {
@@ -354,7 +385,7 @@ internal fun Editor() {
             Log.w("Grainlegit", "Could not warm object selection", error)
         }
         try {
-            eraseEngine.warmRemoval()
+            if (!osorInstalled) eraseEngine.warmRemoval()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -525,6 +556,7 @@ internal fun Editor() {
         val state = erase ?: return
         val shown = active ?: return
         if (shown.retouches != state.draft || state.busy != null || state.liveStroke != null) return
+        val osorDirectory = osorAssets?.directory?.takeIf { osorInstalled && state.preferOsor }
         state.busy = EraseWork.Removing
         state.message = null
         state.operation = scope.launch {
@@ -533,7 +565,7 @@ internal fun Editor() {
                 val remover = Remover(shown.photo, shown.layout, resolver)
                 val start = System.nanoTime()
                 val selection = state.snapshot() ?: return@launch
-                val candidates = selection.use { eraseEngine.remove(remover, it, existing) }
+                val candidates = selection.use { eraseEngine.remove(remover, it, existing, osorDirectory) }
                 if (erase !== state) return@launch
                 Log.i("Grainlegit", "Removed in ${(System.nanoTime() - start) / 1_000_000} ms: " +
                     candidates.joinToString { "${it.label} ${"%.0f".format(it.ms)} ms" })
@@ -768,7 +800,35 @@ internal fun Editor() {
                         Spacer(Modifier.weight(1f))
                         CompareControl(comparing) { comparing = it }
                     }
-                    EraseControls(erasing) { eraseRemove() }
+                    EraseControls(erasing, modelControls = {
+                        if (osorAssets != null) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                when {
+                                    osorInstalled -> {
+                                        Text("Removal model", color = muted, style = MaterialTheme.typography.labelMedium)
+                                        EditorChip("Standard", selected = !erasing.preferOsor) {
+                                            if (erasing.busy == null) erasing.preferOsor = false
+                                        }
+                                        EditorChip("OSOR", selected = erasing.preferOsor) {
+                                            if (erasing.busy == null) erasing.preferOsor = true
+                                        }
+                                    }
+                                    osorDownload != null -> {
+                                        Text("OSOR $osorProgress%", color = muted, style = MaterialTheme.typography.labelMedium)
+                                        LinearProgressIndicator(progress = { osorProgress / 100f }, modifier = Modifier.weight(1f))
+                                        TextButton(onClick = { osorDownload?.cancel() }) { Text("Cancel") }
+                                    }
+                                    else -> TextButton(onClick = { osorLicenseOpen = true }) {
+                                        Text(if (osorDownloadError == null) "Download OSOR · 4.3 GiB" else "Retry OSOR download")
+                                    }
+                                }
+                            }
+                            osorDownloadError?.let { error ->
+                                Text(error, color = muted, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }) { eraseRemove() }
                 }
                 cropDraft != null -> CropControls(cropDraft, cropTool, { cropTool = it }, { crop = it }) { sheet = Sheet.Ratio }
                 curves != null -> CurveControls(curves, curveChannel, { curveChannel = it }, { curveDraft = it })
@@ -810,6 +870,23 @@ internal fun Editor() {
                 }
             }
         }
+    }
+
+    if (osorLicenseOpen && osorAssets != null) {
+        val license = remember(osorAssets) { osorAssets.license() }
+        AlertDialog(
+            onDismissRequest = { osorLicenseOpen = false },
+            title = { Text("Download OSOR") },
+            text = {
+                Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState())) {
+                    Text("OSOR needs about 4.3 GiB of storage. By downloading it, you agree to the model license, including the use restrictions in paragraph 5 and Attachment A.",
+                        modifier = Modifier.padding(bottom = 12.dp))
+                    Text(license, style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = { TextButton(onClick = ::downloadOsor) { Text("Agree & download") } },
+            dismissButton = { TextButton(onClick = { osorLicenseOpen = false }) { Text("Cancel") } },
+        )
     }
 
     when (sheet) {

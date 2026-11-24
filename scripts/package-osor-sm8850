@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+models="$(cd "${1:?Usage: package-osor-sm8850 MODEL_DIR OUTPUT_DIR}" && pwd)"
+output="$(cd "${2:?Usage: package-osor-sm8850 MODEL_DIR OUTPUT_DIR}" && pwd)"
+assets="$repo/android/app/src/main/assets"
+manifest="$assets/models/osor-sm8850/contexts.tsv"
+
+cd "$models"
+awk -F '\t' '{print $4 "  " $2}' "$manifest" | shasum -a 256 -c
+work="$(mktemp -d "$output/.osor-packs.XXXXXX")"
+trap 'rm -r "$work"' EXIT
+for pack in 1 2 3; do
+  name="grainlegit-osor-sm8850-$pack.zip"
+  test ! -e "$output/$name"
+  archive="$work/$name"
+  files=()
+  while IFS=$'\t' read -r group name bytes digest; do
+    if [[ "$group" == "$pack" ]]; then
+      files+=("$name")
+    fi
+  done < "$manifest"
+  zip -1 -j -q "$archive" "$assets/licenses/OSOR-SDXL-Model.txt" \
+    "$assets/licenses/OSOR-SDXL-NOTICE.txt" "$assets/licenses/OSOR-Code.txt" "${files[@]}"
+  unzip -tq "$archive"
+done
+mv "$work/"*.zip "$output/"

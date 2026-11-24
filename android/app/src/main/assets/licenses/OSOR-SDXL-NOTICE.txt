@@ -1,0 +1,15 @@
+Grainlegit OSOR Phase II for Snapdragon 8 Elite Gen 5 (SM8850)
+
+These QNN contexts and ONNX wrappers are modified model files. Grainlegit
+fused the OSOR Phase II adapter into SDXL Inpainting, fixed the inference shape
+at 512 × 512, and compiled the resulting pipeline for the Qualcomm Hexagon NPU.
+
+OSOR: One-Step Diffusion Inpainting for Effect-Aware Object Removal
+Qinming Zhou, Chenxi Sun, Deyang Kong, Junhao He, Xiangheng Tang, Peike Yu,
+Haotian Wu, Leilei Cao, and Linfeng Zhang.
+Code: https://github.com/Zhouqm-Git/osor
+Weights: https://huggingface.co/QinmingZhou/OSOR/tree/9288156766b1df44e5f50fb697876a6f2fd8c062
+Base: https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1/tree/115134f363124c53c7d878647567d04daf26e41e
+
+The model is distributed under the enclosed CreativeML Open RAIL++-M License.
+Use and redistribution are subject to its paragraph 5 and Attachment A.
