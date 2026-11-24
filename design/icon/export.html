@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Icon Export</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&display=block" rel="stylesheet">
+<style>body{background:#222;margin:0;padding:16px;display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}canvas{background:repeating-conic-gradient(#555 0 25%,#444 0 50%) 0/16px 16px}</style>
+</head><body>
+<span style="font-family:'DM Serif Display'">.</span>
+<script>
+// Adaptive icon: 108dp canvas, 72dp visible, 66dp safe zone.
+const SIZES = {mdpi:108, hdpi:162, xhdpi:216, xxhdpi:324, xxxhdpi:432};
+const CREAM = [0xef,0xea,0xdf];
+const GRAIN = 0.95; // option #12
+
+function rng(seed){ return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function gauss(r){ return Math.sqrt(-2*Math.log(r()+1e-12))*Math.cos(2*Math.PI*r()); }
+const clamp = x => x<0?0:x>1?1:x;
+
+// Light + dark specks over existing pixels, as in the SVG preview (alpha = 6n - 3.04, n ~ fractal noise).
+function grain(ctx, S, seed, onlyWhereOpaque){
+  const img = ctx.getImageData(0,0,S,S), d = img.data, r = rng(seed);
+  const I = 6*(0.62-GRAIN*0.12), lo = 0.35*GRAIN, dk = 0.45*GRAIN+0.15;
+  for(let i=0;i<d.length;i+=4){
+    const a0 = d[i+3]/255; if(onlyWhereOpaque && a0===0){ r(); r(); r(); r(); continue; }
+    const aL = clamp(6*(0.5+0.1*gauss(r)) - I)*lo, aD = clamp(6*(0.5+0.1*gauss(r)) - I)*dk;
+    for(let c=0;c<3;c++){ let v = d[i+c]; v = v + (255-v)*aL; v = v*(1-aD); d[i+c] = v; }
+  }
+  ctx.putImageData(img,0,0);
+}
+
+function canvas(S){ const c=document.createElement('canvas'); c.width=c.height=S; return c; }
+
+function background(S){
+  const c=canvas(S), x=c.getContext('2d'), u=S/108;
+  const g=x.createRadialGradient((18+0.30*72)*u,(18+0.25*72)*u,0,(18+0.30*72)*u,(18+0.25*72)*u,0.95*72*u);
+  g.addColorStop(0,'#6b7530'); g.addColorStop(0.5,'#4b5320'); g.addColorStop(1,'#363c17');
+  x.fillStyle=g; x.fillRect(0,0,S,S); grain(x,S,S*7+1,false); return c;
+}
+function text(S, color){
+  const c=canvas(S), x=c.getContext('2d');
+  x.font=`400 100px 'DM Serif Display'`; const w=x.measureText('grainlegit').width;
+  const target = S*(62/108); x.font=`400 ${100*target/w}px 'DM Serif Display'`;
+  const m=x.measureText('grainlegit');
+  x.fillStyle=color; x.textAlign='center'; x.textBaseline='alphabetic';
+  x.fillText('grainlegit', S/2, S/2 + (m.fontBoundingBoxAscent - m.fontBoundingBoxDescent)/2);
+  return c;
+}
+function foreground(S){ const c=text(S,`rgb(${CREAM})`); grain(c.getContext('2d'),S,S*7+2,true); return c; }
+
+document.fonts.load("400 100px 'DM Serif Display'").then(()=>{
+  window.out = {};
+  for(const [dpi,S] of Object.entries(SIZES)){
+    const parts = {background:background(S), foreground:foreground(S), monochrome:text(S,'#ffffff')};
+    for(const [k,c] of Object.entries(parts)) window.out[`mipmap-${dpi}/ic_launcher_${k}.png`] = c.toDataURL('image/png');
+  }
+  // Store/README icon: 512px, full bleed, drawn from the 72dp visible area.
+  const S=768, bg=background(S), fg=foreground(S), c=canvas(512), x=c.getContext('2d');
+  x.drawImage(bg,128,128,512,512,0,0,512,512); x.drawImage(fg,128,128,512,512,0,0,512,512);
+  window.out['icon-512.png']=c.toDataURL('image/png');
+  // Preview: masked like a launcher
+  const p=canvas(432), px=p.getContext('2d'); px.beginPath(); px.roundRect(72,72,288,288,72); px.clip();
+  px.drawImage(background(432),0,0); px.drawImage(foreground(432),0,0);
+  document.body.append(p, c);
+  window.done = true;
+});
+</script></body></html>

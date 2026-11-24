@@ -1,5 +1,7 @@
 # Grainlegit
 
+<img src="design/icon/icon-512.png" width="96" alt="Grainlegit app icon: grainlegit in cream serif type on grainy olive">
+
 Grainlegit is an Android photo editor that grows film grain from the photo instead of laying a noise texture over it. Pick a real negative stock and a frame size. The app turns each pixel into dye density on a simulated negative, forms the grain from individual dye clouds, and scans the result. The GPU renders it live. On-device AI removes objects, and nothing is uploaded.
 
 <p align="center">
