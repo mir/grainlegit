@@ -67,7 +67,7 @@ internal class PhotoRegions(
         check(rawToOriented.invert(it)) { "The photo orientation is invalid" }
     }
 
-    fun decode(oriented: Rect): Bitmap {
+    fun decode(oriented: Rect, sampleSize: Int = 1): Bitmap {
         val bounds = RectF(oriented)
         inverse.mapRect(bounds)
         val raw = Rect(
@@ -76,6 +76,8 @@ internal class PhotoRegions(
         )
         val decoded = decoder.decodeRegion(raw, BitmapFactory.Options().apply {
             inPreferredConfig = Bitmap.Config.ARGB_8888
+            inSampleSize = sampleSize
+            inMutable = true
             if (embeddedColour == null) inPreferredColorSpace = srgb
         })
         // Some HEIF codecs accept a whole image but decline arbitrary regions.

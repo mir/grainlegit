@@ -14,12 +14,23 @@ android {
         applicationId = "dev.grainlegit.editor"
         minSdk = 36
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3"
+        versionCode = 4
+        versionName = "0.4"
         ndk.abiFilters.add("arm64-v8a")
     }
 
+    // Debug builds install beside the signed release instead of replacing it.
+    buildTypes.getByName("debug").applicationIdSuffix = ".dev"
+
     buildFeatures.compose = true
+    // LiteRT memory-maps models straight from the APK.
+    androidResources.noCompress += "tflite"
+    // The Hexagon loader reads the NPU runtime from the extracted native library directory.
+    packaging.jniLibs.useLegacyPackaging = true
+    // Keep only the Snapdragon 8 Elite Gen 5 (Hexagon v81) NPU runtime from the QAIRT package.
+    packaging.jniLibs.excludes += listOf(
+        "**/libQnnDsp*.so", "**/libQnnGpu.so", "**/libQnnHtpV6*", "**/libQnnHtpV7*",
+    )
 }
 
 kotlin {
@@ -38,6 +49,13 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.exifinterface:exifinterface:1.4.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("com.google.ai.edge.litert:litert:2.4.0")
+    implementation("com.google.ai.edge.litert:litert-gpu:2.4.0")
+    implementation("com.google.ai.edge.litert:litert-npu-runtime-qualcomm:2.4.0")
+    // LiteRT 2.4.0 needs QNN System API 1.16 or newer (QAIRT 2.52).
+    implementation("com.qualcomm.qti:qnn-runtime:2.52.0")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
+    implementation("com.qualcomm.qti:onnxruntime-android-qnn:2.8.0")
 }
 
 abstract class BuildRustRenderer : Exec() {
@@ -71,6 +89,41 @@ androidComponents.onVariants { variant ->
         }
     }
     variant.sources.jniLibs?.addGeneratedSourceDirectory(nativeBuild, BuildRustRenderer::jniOutput)
+}
+
+// Models are large binaries kept outside git; scripts/ai-models prepares them.
+abstract class CopyModels : DefaultTask() {
+    @get:InputFiles abstract val models: ConfigurableFileCollection
+    @get:InputDirectory
+    @get:Optional
+    abstract val sm8850Models: DirectoryProperty
+    @get:OutputDirectory abstract val assets: DirectoryProperty
+    @get:Inject abstract val files: FileSystemOperations
+
+    @TaskAction fun copy() {
+        files.sync {
+            from(models) { into("models") }
+            sm8850Models.orNull?.let { directory ->
+                from(directory) {
+                    include("*.tflite")
+                    into("models/sm8850")
+                }
+            }
+            into(assets)
+        }
+    }
+}
+
+androidComponents.onVariants { variant ->
+    val name = variant.name.replaceFirstChar(Char::uppercaseChar)
+    val copyModels = tasks.register<CopyModels>("copy${name}Models") {
+        models.from(repo.dir("local/ai-models/app"))
+        if (providers.gradleProperty("sm8850Models").orNull.toBoolean()) {
+            sm8850Models.set(repo.dir("local/ai-models/aot/sm8850"))
+        }
+        assets.set(layout.buildDirectory.dir("generated/modelAssets/${variant.name}"))
+    }
+    variant.sources.assets?.addGeneratedSourceDirectory(copyModels, CopyModels::assets)
 }
 
 tasks.register("runtimeLicenseInventory") {

@@ -16,10 +16,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
 internal fun Photo.renderOutput(
-    resolver: ContentResolver, layout: GeometryLayout, output: Rect, reader: PhotoRegions? = null,
+    resolver: ContentResolver, layout: GeometryLayout, output: Rect, retouches: List<Retouch>,
+    reader: PhotoRegions? = null,
 ): Bitmap {
     val region = layout.sourceRegion(output)
-    val source = region?.let { reader?.decode(it) ?: decodeDetail(resolver, it) }
+    val source = region?.let { applyRetouches(reader?.decode(it) ?: decodeDetail(resolver, it), it, retouches) }
     try {
         return layout.render(source, region ?: Rect(), output, IntSize(output.width(), output.height()))
     } finally {
@@ -34,6 +35,7 @@ internal suspend fun savePhoto(
     layout: GeometryLayout,
     seed: Long,
     edit: String,
+    retouches: List<Retouch>,
     cancelled: AtomicBoolean,
     progress: (Float) -> Unit,
 ) = withContext(Dispatchers.IO) {
@@ -57,7 +59,7 @@ internal suspend fun savePhoto(
                             ensureActive()
                             val inside = Rect(x, y, (x + 1024).coerceAtMost(size.width), bottom)
                             val outer = inside.copyExpanded(size, padding)
-                            val bitmap = photo.renderOutput(resolver, layout, outer, reader)
+                            val bitmap = photo.renderOutput(resolver, layout, outer, retouches, reader)
                             val rgb = renderer.exportTile(bitmap, outer, inside, edge, seed, edit)
                             val rowBytes = inside.width() * 3
                             for (row in 0 until inside.height()) {

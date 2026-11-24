@@ -128,6 +128,10 @@ internal class GeometryLayout(val sourceSize: IntSize, geometry: Geometry) {
 
     fun previewToSource() = FloatArray(9).also(inverse::getValues)
 
+    fun outputToSource() = Matrix(inverse)
+
+    fun sourceToOutput() = Matrix(transform)
+
     private fun contains(x: Float, y: Float, width: Float, height: Float): Boolean {
         val points = floatArrayOf(
             x - width / 2, y - height / 2, x + width / 2, y - height / 2,

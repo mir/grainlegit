@@ -79,7 +79,7 @@ private val scanTools = listOf(Tool.ScanBlur, Tool.Aperture)
 @Composable
 internal fun EditControls(
     panel: Panel, setPanel: (Panel) -> Unit, tool: Tool, edit: Edit,
-    selectTool: (Tool) -> Unit, onCrop: () -> Unit, showSheet: (Sheet) -> Unit,
+    selectTool: (Tool) -> Unit, onCrop: () -> Unit, onErase: () -> Unit, showSheet: (Sheet) -> Unit,
     change: (Edit) -> Unit, start: () -> Unit, finish: () -> Unit, commit: (Edit) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().background(panelColor).padding(horizontal = 16.dp)) {
@@ -116,6 +116,7 @@ internal fun EditControls(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 EditorChip("Crop", onClick = onCrop)
+                EditorChip("Erase", onClick = onErase)
                 adjustmentTools.forEach { entry ->
                     EditorChip(entry.title, selected = entry == tool, onClick = { selectTool(entry) })
                 }

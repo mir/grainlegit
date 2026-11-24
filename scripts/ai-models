@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Download the on-device object-removal models and stage them as app assets.
+# The files stay out of git: local/ai-models/app is copied into the APK by Gradle.
+set -euo pipefail
+
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+models="$repo/local/ai-models"
+app="$models/app"
+mkdir -p "$models/downloads" "$app"
+
+fetch() { # fetch <url> <file> <sha256>
+  local file="$models/downloads/$2"
+  if [[ ! -f "$file" ]] || ! shasum -a 256 -c <<<"$3  $file" >/dev/null 2>&1; then
+    curl -fL --retry 3 -o "$file.part" "$1"
+    mv "$file.part" "$file"
+  fi
+  shasum -a 256 -c <<<"$3  $file" >/dev/null || { printf 'Checksum mismatch for %s\n' "$2" >&2; exit 1; }
+}
+
+# MI-GAN (Picsart AI Research, MIT), 512×512 Places2, LiteRT conversion by litert-community.
+fetch https://huggingface.co/litert-community/MI-GAN-512-Places2-LiteRT/resolve/main/migan_fp16.tflite \
+  migan_fp16.tflite ef53f8dca69e5ce29629441128322c4d9a0a527b2a043703e0ab497f2463c25f
+cp "$models/downloads/migan_fp16.tflite" "$app/migan.tflite"
+
+# EdgeTAM (Meta, Apache-2.0), Qualcomm AI Hub float export for LiteRT. The w8a8 export
+# quantizes the prompt labels to [-1, 0], which cannot express a positive point.
+fetch https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/edgetam/releases/v0.67.0/edgetam-tflite-float.zip \
+  edgetam-tflite-float.zip c209efebf345198e5b00ef6eeec24a40f8ff49aff964fc1356b777909f9c4633
+unzip -oqj "$models/downloads/edgetam-tflite-float.zip" '*/encoder.tflite' '*/video_decoder.tflite' -d "$models/edgetam"
+cp "$models/edgetam/encoder.tflite" "$app/edgetam_encoder.tflite"
+cp "$models/edgetam/video_decoder.tflite" "$app/edgetam_decoder.tflite"
+
+# Big-LaMa (Apache-2.0), converted by tools/lama when its output exists.
+for size in 512; do
+  if [[ -f "$models/lama/big_lama_${size}_fp16.tflite" ]]; then
+    cp "$models/lama/big_lama_${size}_fp16.tflite" "$app/lama_$size.tflite"
+  fi
+done
+
+ls -la "$app"

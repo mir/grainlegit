@@ -22,6 +22,7 @@ Grainlegit brings Filmgrain’s colour-negative and optical-print simulation to 
 | Recent edits | Open JPEG and HEIF photos through the Android photo picker. Reopen recent photos with their saved settings and grain seeds. |
 | Preview and Adjust | **Fit**, **100%**, pinch and pan, hold-to-compare, and undo and redo. Crop and all adjustments share one horizontal strip. Curves and white balance preview changes before **Apply**. |
 | Crop | Resize with the corner handles or drag to reposition. Choose an aspect ratio and adjust straightening, perspective, rotation, flips, or **Constrain**. The grid and dimmed mask update independently of the cached photo, and the film renderer updates after **Apply**. |
+| Erase | Tap objects or paint an area, then choose **Remove** and **Apply**. On SM8850 the device-specific APK uses the precompiled SAM 3.1 image encoder and reuses its results for subsequent taps on the same photo. |
 | Grain | Choose a stock and format. The tool strip contains exposure, grain amount, size, colour, dye per cloud, coarse fraction, RGB cloud sizes, and development. Coarse fraction can use the stock profile or a manual value. |
 | Print | Choose Direct, Paper, or Print film. The **Settings** sheet contains enlargement, enlarger blur, print grain, filtration, and scan optics. Direct scan exposes scan optics. |
 | Export | Choose **Save copy** to start a full-resolution sRGB JPEG save with progress and cancellation. **Photo saved** confirms the export. |
@@ -50,6 +51,7 @@ Install a JDK (17 or 21), `rustup`, and Android SDK Command-line Tools (latest).
 
 ```sh
 scripts/android setup      # API 36 SDK, pinned NDK, build tools, adb, and Rust Android target
+scripts/ai-models          # stage the on-device AI Erase assets
 scripts/android build     # android/app/build/outputs/apk/debug/app-debug.apk
 scripts/android verify    # APK ZIP and arm64 ELF alignment for 16 KiB page devices
 scripts/android devices   # check that adb sees the phone
@@ -59,6 +61,12 @@ scripts/android run       # build, install, and launch
 The first device target is the Xiaomi 17 Ultra. Enable USB debugging, connect the phone, and accept its debugging prompt. Open a photo, tap **100%** for a source-pixel crop, and hold the half-circle button to see the original. Use **Fit** to return to the full frame.
 
 The app keeps the original intact and saves recent edits and their seeds locally. Tap the export arrow, then **Save copy**, to save a JPEG to `Pictures/Grainlegit`. The exporter decodes and renders padded tiles and stages RGB rows in the app cache before encoding. Allow approximately three bytes of temporary disk space per output pixel, plus space for the JPEG. Cancelled exports remove their temporary files and any unpublished MediaStore entry.
+
+### SM8850 release APK
+
+Use the [SAM 3.1 ONNX export](https://huggingface.co/smile-forge/sam3.1-onnx/tree/47874a1f1d996211f6cc11bc6201a36af87a3fd6). Place `image-encoder.onnx`, `image-encoder.onnx.data`, and `click-decoder.onnx` together in a local model directory. With the QAIRT 2.52 x86-64 Linux libraries on `LD_LIBRARY_PATH`, run `uv run scripts/compile-sam31.py MODEL_DIR` to generate the context under `MODEL_DIR/sm8850`.
+
+Build the unsigned APK with `android/gradlew -p android :app:assembleRelease`. Run `scripts/package-android-sm8850 MODEL_DIR OUTPUT_APK` to add the precompiled model, align and sign the APK. The script uses `release.p12` and `release.pass` in `${XDG_CONFIG_HOME:-$HOME/.config}/grainlegit`. Override the paths with `GRAINLEGIT_RELEASE_KEYSTORE` and `GRAINLEGIT_RELEASE_PASSWORD_FILE`.
 
 Use `scripts/android logs` for the adapter and driver, Vulkan setup, and render-worker completion timings. The timing logs end at GPU completion. Collect an Android FrameTimeline/Perfetto trace for input-to-display measurements. Run the WGSL direct-scan, optical-print, and tile parity checks on macOS with `(cd renderer && cargo test --locked)`.
 

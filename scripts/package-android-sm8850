@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Add the device-specific context to an unsigned Gradle release, then align and sign it.
+set -euo pipefail
+
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+model="$(cd "${1:?Usage: package-android-sm8850 MODEL_DIR OUTPUT_APK}" && pwd)"
+destination="${2:?Usage: package-android-sm8850 MODEL_DIR OUTPUT_APK}"
+output_dir="$(cd "$(dirname "$destination")" && pwd)"
+output="$output_dir/$(basename "$destination")"
+test ! -e "$output"
+
+if [[ "$(uname -s)" == Darwin ]]; then
+  default_sdk="$HOME/Library/Android/sdk"
+else
+  default_sdk="$HOME/Android/Sdk"
+fi
+sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$default_sdk}}"
+tools="$sdk/build-tools/36.0.0"
+key_dir="${XDG_CONFIG_HOME:-$HOME/.config}/grainlegit"
+key="${GRAINLEGIT_RELEASE_KEYSTORE:-$key_dir/release.p12}"
+password_file="${GRAINLEGIT_RELEASE_PASSWORD_FILE:-$key_dir/release.pass}"
+unsigned="$repo/android/app/build/outputs/apk/release/app-release-unsigned.apk"
+test -f "$unsigned" && test -r "$key" && test -r "$password_file"
+
+work="$(mktemp -d "$output_dir/.grainlegit-apk.XXXXXX")"
+trap 'rm -r "$work"' EXIT
+assets=assets/models/sm8850/sam31
+mkdir -p "$work/$assets"
+for input in "$model"/sm8850/encoder-sm8850{.onnx,_qnn.bin} "$model"/click-decoder.onnx; do
+  test -s "$input"
+  ln -s "$input" "$work/$assets/"
+done
+
+# Add stored entries for AssetManager.openFd without copying the context into Gradle intermediates.
+cp "$unsigned" "$work/unaligned.apk"
+(cd "$work" && zip -q -0 unaligned.apk "$assets/"*)
+"$tools/zipalign" -P 16 -f 4 "$work/unaligned.apk" "$work/aligned.apk"
+unlink "$work/unaligned.apk"
+"$tools/apksigner" sign --ks "$key" --ks-type PKCS12 --ks-pass "file:$password_file" \
+  --v4-signing-enabled false --out "$work/signed.apk" "$work/aligned.apk"
+"$tools/apksigner" verify "$work/signed.apk"
+"$tools/zipalign" -c -P 16 4 "$work/signed.apk"
+mv "$work/signed.apk" "$output"
+printf '%s\n' "$output"

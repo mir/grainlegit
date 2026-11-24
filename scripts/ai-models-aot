@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Compile model assets for Snapdragon 8 Elite Gen 5 (SM8850).
+# Run on x86-64 Linux with the LiteRT compiler and Qualcomm QAIRT host libraries.
+# Package the results with ORG_GRADLE_PROJECT_sm8850Models=true scripts/android build.
+set -euo pipefail
+
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+compiler=${1:?Path to LiteRT apply_plugin_main required}
+plugin_dir=${2:?Path to the Qualcomm compiler plugin directory required}
+qairt_libs=${3:?Path to QAIRT x86_64-linux-clang libraries required}
+shift 3
+
+models="$repo/local/ai-models"
+output="$models/aot/sm8850"
+mkdir -p "$output"
+if [[ $# == 0 ]]; then
+  set -- edgetam_encoder.tflite edgetam_decoder.tflite migan.tflite
+  if [[ -f "$models/app/lama_512.tflite" ]]; then
+    set -- "$@" lama_512.tflite
+  fi
+fi
+
+for model in "$@"; do
+  case "$model" in
+    edgetam_encoder.tflite|edgetam_decoder.tflite|migan.tflite|lama_512.tflite) ;;
+    *) printf 'Unknown app model: %s\n' "$model" >&2; exit 1 ;;
+  esac
+  printf 'Compiling %s for SM8850\n' "$model"
+  temporary="$output/$model.part"
+  LD_LIBRARY_PATH="$qairt_libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$compiler" \
+    --cmd apply --libs "$plugin_dir" --soc_manufacturer Qualcomm --soc_model SM8850 \
+    --model "$models/app/$model" --o "$temporary"
+  test -s "$temporary"
+  mv "$temporary" "$output/$model"
+done

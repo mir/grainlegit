@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color as PixelColor
 import android.graphics.Rect
+import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
@@ -83,8 +84,34 @@ import kotlin.math.roundToInt
 import kotlin.random.Random
 
 private data class ActivePhoto(
-    val photo: Photo, val layout: GeometryLayout, val geometry: Geometry, val generation: Long,
-)
+    val photo: Photo, val layout: GeometryLayout, val geometry: Geometry, val retouches: List<Retouch>,
+    val generation: Long,
+) {
+    val selectionImageKey = Any()
+}
+
+/** Run [block] with the Fit-sized source, with [retouches] applied to a temporary copy. */
+private inline fun <T> withRetouches(input: ImportedPhoto, retouches: List<Retouch>, block: (android.graphics.Bitmap) -> T): T {
+    if (retouches.isEmpty()) return block(input.bitmap)
+    val base = applyRetouches(input.bitmap.copy(android.graphics.Bitmap.Config.ARGB_8888, true),
+        input.photo.size.bounds(), retouches)
+    try {
+        return block(base)
+    } finally {
+        base.recycle()
+    }
+}
+
+private fun selectionImage(input: ImportedPhoto, shown: ActivePhoto): android.graphics.Bitmap {
+    // The model sees geometry and saved removals without film processing.
+    val output = shown.layout.output
+    val scale = (Segmenter.INPUT.toFloat() / max(output.width, output.height)).coerceAtMost(1f)
+    val size = IntSize((output.width * scale).roundToInt().coerceAtLeast(1),
+        (output.height * scale).roundToInt().coerceAtLeast(1))
+    return withRetouches(input, shown.retouches) { base ->
+        shown.layout.render(base, input.photo.size.bounds(), output.bounds(), size)
+    }
+}
 
 private data class BalanceSample(val point: IntOffset, val color: Color, val gains: List<Float>)
 
@@ -115,6 +142,9 @@ internal fun Editor() {
     var sample by remember { mutableStateOf<BalanceSample?>(null) }
     var sheet by remember { mutableStateOf<Sheet?>(null) }
     var printDraft by remember { mutableStateOf<Edit?>(null) }
+    var erase by remember { mutableStateOf<EraseState?>(null) }
+    val eraseEngine = remember(context) { EraseEngine.get(context) }
+    remember(context) { PatchStore.init(context) }
 
     var zoom by remember { mutableStateOf<Camera?>(null) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
@@ -202,6 +232,7 @@ internal fun Editor() {
     fun goBack() {
         when {
             sheet != null -> dismissSheet()
+            erase != null -> erase = null
             crop != null -> crop = null
             curveDraft != null -> curveDraft = null
             picking -> {
@@ -225,6 +256,18 @@ internal fun Editor() {
         }
     }
     BackHandler(enabled = uri != null) { goBack() }
+
+    // Remove removal patches that no saved edit uses any more.
+    LaunchedEffect(Unit) {
+        val keep = (recents.flatMap { it.edit.retouches } + edit.retouches).map { it.patch }.toSet()
+        withContext(Dispatchers.IO) { PatchStore.retainOnly(keep) }
+    }
+
+    // Closing Erase drops its selection and queued requests. The compiled models are shared.
+    DisposableEffect(erase) {
+        val closing = erase
+        onDispose { closing?.dispose() }
+    }
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { chosen ->
         if (chosen != null) {
             runCatching { resolver.takePersistableUriPermission(chosen, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
@@ -239,6 +282,7 @@ internal fun Editor() {
         original = null
         zoom = null
         crop = null
+        erase = null
         comparing = false
         picking = false
         curveDraft = null
@@ -271,7 +315,8 @@ internal fun Editor() {
     val cropGeometry = crop
     val cropping = cropGeometry != null
     val sourceGeometry = if (cropping) Geometry() else edit.geometry
-    LaunchedEffect(original, sourceGeometry) {
+    val sourceRetouches = erase?.draft ?: edit.retouches
+    LaunchedEffect(original, sourceGeometry, sourceRetouches) {
         val input = original ?: return@LaunchedEffect
         try {
             val (layout, bitmap) = withContext(decodeDispatcher) {
@@ -280,11 +325,13 @@ internal fun Editor() {
                 val scale = (FIT_LONG_EDGE.toFloat() / max(output.width, output.height)).coerceAtMost(1f)
                 val dimensions = IntSize((output.width * scale).roundToInt().coerceAtLeast(1),
                     (output.height * scale).roundToInt().coerceAtLeast(1))
-                layout to layout.render(input.bitmap, input.photo.size.bounds(), output.bounds(), dimensions)
+                withRetouches(input, sourceRetouches) { base ->
+                    layout to layout.render(base, input.photo.size.bounds(), output.bounds(), dimensions)
+                }
             }
             val generation = renderer.beginSource(clear = false)
             renderer.setSource(generation, layout.output, bitmap, seed)
-            current = ActivePhoto(input.photo, layout, sourceGeometry, generation)
+            current = ActivePhoto(input.photo, layout, sourceGeometry, sourceRetouches, generation)
             photoError = null
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -294,6 +341,43 @@ internal fun Editor() {
     }
 
     val active = current
+
+    // Let the preview settle first. Select and Remove share these models with the warm-up.
+    LaunchedEffect(active != null) {
+        if (active == null) return@LaunchedEffect
+        delay(500)
+        try {
+            eraseEngine.warmSelection()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w("Grainlegit", "Could not warm object selection", error)
+        }
+        try {
+            eraseEngine.warmRemoval()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w("Grainlegit", "Could not warm object removal", error)
+        }
+    }
+
+    val selectionDraft = erase
+    LaunchedEffect(selectionDraft?.mode, active?.selectionImageKey) {
+        val state = selectionDraft ?: return@LaunchedEffect
+        val shown = active ?: return@LaunchedEffect
+        val input = original ?: return@LaunchedEffect
+        if (state.mode != EraseMode.Select || shown.retouches != state.draft ||
+            shown.layout.output != state.output || shown.photo != input.photo) return@LaunchedEffect
+        try {
+            eraseEngine.prepareSelection(shown.selectionImageKey) { selectionImage(input, shown) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w("Grainlegit", "Could not prepare the photo for selection", error)
+        }
+    }
+
     val cropSourceSize = active?.takeIf { cropping && it.geometry == sourceGeometry }?.photo?.size
     // Changing the window leaves the cached image, camera, and presentation matrix alone.
     val uncropped = cropGeometry?.withoutCrop()
@@ -342,7 +426,7 @@ internal fun Editor() {
         delay(55)
         val outer = needed.copyExpanded(active.layout.output, 48)
         try {
-            val bitmap = withContext(decodeDispatcher) { active.photo.renderOutput(resolver, active.layout, outer) }
+            val bitmap = withContext(decodeDispatcher) { active.photo.renderOutput(resolver, active.layout, outer, active.retouches) }
             renderer.setDetail(active.generation, detail, bitmap, outer.left, outer.top)
             covered = outer
             photoError = null
@@ -369,7 +453,95 @@ internal fun Editor() {
     val cropTouchArea by rememberUpdatedState(ScreenRect(
         viewport.center() - fitViewport.center(), Size(fitViewport.width.toFloat(), fitViewport.height.toFloat()),
     ))
+    val currentFit by rememberUpdatedState(fit)
+    val currentPhotoSize by rememberUpdatedState(photoSize)
+    val currentErase by rememberUpdatedState(erase)
+    fun transformView(centroid: Offset, pan: Offset, factor: Float) {
+        val size = currentPhotoSize ?: return
+        val old = currentView ?: return
+        val screenCenter = currentViewport.center()
+        val scale = (old.scale * factor).coerceIn(currentFit, 1f)
+        val anchor = old.center + (centroid - screenCenter) / old.scale
+        val center = anchor - (centroid + pan - screenCenter) / scale
+        zoom = if (scale <= currentFit) null else Camera(scale, center).constrain(size, currentViewport, currentFit)
+    }
+
+    fun eraseTap(point: Offset) {
+        val state = erase ?: return
+        val camera = view ?: return
+        val pixel = camera.toOutput(point, viewport)
+        val output = state.output
+        if (pixel.x !in 0f..output.width.toFloat() || pixel.y !in 0f..output.height.toFloat()) return
+        if (state.busy != null || state.mode != EraseMode.Select) return
+        val shown = active ?: return
+        val input = original ?: return
+        if (shown.retouches != state.draft || shown.layout.output != output || shown.photo != input.photo) return
+        state.message = null
+        state.busy = "Finding object…"
+        state.operation = scope.launch {
+            try {
+                val start = System.nanoTime()
+                val prompt = Prompt(pixel.x / output.width, pixel.y / output.height)
+                val found = eraseEngine.select(shown.selectionImageKey, prompt) {
+                    selectionImage(input, shown)
+                }
+                if (erase !== state) return@launch
+                Log.i("Grainlegit", "Segmented in ${(System.nanoTime() - start) / 1_000_000} ms " +
+                    "(object ${"%.2f".format(found.objectScore)}, score ${"%.2f".format(found.score)})")
+                if (!found.found) state.message = "No object found there. Try Brush."
+                else {
+                    state.selection.checkpoint()
+                    state.selection.add(found)
+                    state.selectionChanged()
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                Log.e("Grainlegit", "Segmentation failed", error)
+                state.message = error.message ?: "Could not select the object"
+            } finally {
+                state.busy = null
+            }
+        }
+    }
+
+    fun eraseRemove() {
+        val state = erase ?: return
+        val shown = active ?: return
+        if (shown.retouches != state.draft || state.busy != null || state.liveStroke != null) return
+        state.busy = "Removing…"
+        state.message = null
+        state.operation = scope.launch {
+            try {
+                val existing = state.draft
+                val remover = Remover(shown.photo, shown.layout, resolver)
+                val start = System.nanoTime()
+                val selection = state.snapshot() ?: return@launch
+                val candidates = selection.use { eraseEngine.remove(remover, it, existing) }
+                if (erase !== state) return@launch
+                Log.i("Grainlegit", "Removed in ${(System.nanoTime() - start) / 1_000_000} ms: " +
+                    candidates.joinToString { "${it.label} ${"%.0f".format(it.ms)} ms" })
+                state.candidates = candidates
+                state.chosen = 0
+                state.draft = existing + candidates.first().retouch
+                state.selection.reset()
+                state.selectionChanged()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                Log.e("Grainlegit", "Removal failed", error)
+                state.message = error.message ?: "Could not remove the selection"
+            } finally {
+                state.busy = null
+            }
+        }
+    }
+    val latestEraseTap by rememberUpdatedState<(Offset) -> Unit> { eraseTap(it) }
+
     val gestures = when {
+        erase != null -> Modifier.pointerInput(Unit) {
+            eraseGestures({ currentErase }, { currentView }, { currentViewport }, { latestEraseTap(it) }, ::transformView)
+        }
         cropping -> Modifier.pointerInput(Unit) {
             awaitEachGesture {
                 val down = awaitFirstDown()
@@ -431,7 +603,7 @@ internal fun Editor() {
         try {
             val region = Rect(point.x, point.y, point.x + 1, point.y + 1).copyExpanded(active.layout.output, 4)
             sample = withContext(decodeDispatcher) {
-                val bitmap = active.photo.renderOutput(resolver, active.layout, region)
+                val bitmap = active.photo.renderOutput(resolver, active.layout, region, active.retouches)
                 try { sampleBalance(bitmap, point) } finally { bitmap.recycle() }
             }
             photoError = null
@@ -451,7 +623,8 @@ internal fun Editor() {
         exportJob = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 val layout = GeometryLayout(photo.photo.size, snapshot.geometry)
-                savePhoto(context, renderer, photo.photo, layout, exportSeed, snapshot.nativeSettings(), exportCancel) {
+                savePhoto(context, renderer, photo.photo, layout, exportSeed, snapshot.nativeSettings(), snapshot.retouches,
+                    exportCancel) {
                     progress = it
                 }
                 sheet = Sheet.Saved
@@ -473,7 +646,8 @@ internal fun Editor() {
         } else {
             val cropDraft = crop
             val curves = curveDraft
-            val editingTool = cropDraft != null || curves != null || picking
+            val erasing = erase
+            val editingTool = cropDraft != null || curves != null || picking || erasing != null
             val sampled = sample?.takeIf { it.point == samplePoint }
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 EditorAction(if (editingTool) "Cancel" else "Recent edits",
@@ -481,6 +655,7 @@ internal fun Editor() {
                 if (editingTool) {
                     val heading = when {
                         cropDraft != null -> "Crop"
+                        erasing != null -> "Erase"
                         curves != null -> "Curves"
                         else -> "White balance"
                     }
@@ -493,8 +668,12 @@ internal fun Editor() {
                             }
                         }) { Text("Reset") }
                     }
-                    TextButton(enabled = !picking || sampled != null, onClick = {
+                    TextButton(enabled = (!picking || sampled != null) && erasing?.busy == null, onClick = {
                         when {
+                            erasing != null -> {
+                                commit(edit.copy(retouches = erasing.draft))
+                                erase = null
+                            }
                             cropDraft != null -> {
                                 if (cropDraft != edit.geometry) zoom = null
                                 commit(edit.copy(geometry = cropDraft))
@@ -528,6 +707,7 @@ internal fun Editor() {
             Box(Modifier.fillMaxWidth().weight(1f).background(background)
                 .onSizeChanged { viewport = it }.then(gestures), contentAlignment = Alignment.Center) {
                 PreviewSurface(renderer)
+                if (erasing != null) EraseOverlay(erasing, view, viewport)
                 if (cropWindow != null && cropPreview != null) {
                     val photoArea = ScreenRect(viewport.center() - cropPreview.output.center() * fit,
                         Size(cropPreview.output.width * fit, cropPreview.output.height * fit))
@@ -539,7 +719,7 @@ internal fun Editor() {
                         SampleTarget(topLeft + Offset(point.x.toFloat(), point.y.toFloat()) * fit)
                     }
                 }
-                val status = photoError ?: renderError ?: if (opening || (active == null && original != null)) {
+                val status = photoError ?: renderError ?: erasing?.busy ?: erasing?.message ?: if (opening || (active == null && original != null)) {
                     "Opening photo…"
                 } else null
                 if (status != null) Surface(color = panelColor, shape = RoundedCornerShape(12.dp)) {
@@ -560,6 +740,17 @@ internal fun Editor() {
             }
 
             when {
+                erasing != null -> {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        EditorChip("Fit", zoom == null, Modifier.width(48.dp), plain = true, highlightOnly = true) { zoom = null }
+                        EditorChip("100%", fullResolution, Modifier.width(55.dp), plain = true, highlightOnly = true) {
+                            if (photoSize != null) zoom = Camera(1f, view?.center ?: photoSize.center())
+                        }
+                        Spacer(Modifier.weight(1f))
+                        CompareControl(comparing) { comparing = it }
+                    }
+                    EraseControls(erasing) { eraseRemove() }
+                }
                 cropDraft != null -> CropControls(cropDraft, cropTool, { cropTool = it }, { crop = it }) { sheet = Sheet.Ratio }
                 curves != null -> CurveControls(curves, curveChannel, { curveChannel = it }, { curveDraft = it })
                 picking -> Column(Modifier.fillMaxWidth().background(panelColor).padding(18.dp)) {
@@ -591,6 +782,7 @@ internal fun Editor() {
                         tool = it.defaultTool
                     }, activeTool, edit, ::selectTool,
                         onCrop = { cropTool = Tool.Straighten; crop = edit.geometry },
+                        onErase = { erase = EraseState(active.layout.output, edit.retouches) },
                         showSheet = {
                             if (it == Sheet.PrintSettings) printDraft = edit
                             sheet = it

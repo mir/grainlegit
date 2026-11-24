@@ -30,7 +30,7 @@ case "${1:-build}" in
       "$adb" install -r "$apk"
     fi
     if [[ "${1:-build}" == run ]]; then
-      "$adb" shell am start -W -n dev.grainlegit.editor/.MainActivity
+      "$adb" shell am start -W -n dev.grainlegit.editor.dev/dev.grainlegit.editor.MainActivity
     fi
     ;;
   devices)

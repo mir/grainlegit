@@ -1,5 +1,6 @@
 package dev.grainlegit.editor
 
+import android.content.pm.ApplicationInfo
 import android.graphics.Color as SystemColor
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -41,6 +42,10 @@ private val colors = darkColorScheme(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null && applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0 &&
+            intent.getBooleanExtra("benchmark", false)) {
+            Thread({ runModelBenchmark(applicationContext) }, "Grainlegit benchmark").start()
+        }
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(SystemColor.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(SystemColor.TRANSPARENT),

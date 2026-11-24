@@ -42,6 +42,7 @@ internal enum class Tool(
     Straighten("Straighten", -45f, 45f, steps = 180, unit = "°"),
     Horizontal("Horizontal", -30f, 30f, steps = 120, unit = "°"),
     Vertical("Vertical", -30f, 30f, steps = 120, unit = "°"),
+    BrushSize("Brush size", 6f, 80f, 26f, 74, " dp"),
     // Keep names used in saved activity state before these moved to dedicated controls.
     Stock("Stock"), Format("Format"), Medium("Medium");
 
@@ -80,6 +81,7 @@ internal data class Edit(
     val curves: List<List<Float>> = List(4) { neutralCurve },
     val geometry: Geometry = Geometry(),
     val useCoarseProfile: Boolean = true,
+    val retouches: List<Retouch> = emptyList(),
 ) {
     operator fun get(tool: Tool) = values[tool] ?: tool.initial
 
@@ -125,7 +127,8 @@ internal data class Edit(
             .put("format", format).put("medium", medium)
             .put("balance", JSONArray(balance.map(Float::toDouble)))
             .put("curves", JSONArray(curves.map { curve -> JSONArray(curve.map(Float::toDouble)) }))
-            .put("geometry", geometry.encode()).put("useCoarseProfile", useCoarseProfile).toString()
+            .put("geometry", geometry.encode()).put("useCoarseProfile", useCoarseProfile)
+            .put("retouches", retouches.encode()).toString()
     }
 
     companion object {
@@ -144,6 +147,7 @@ internal data class Edit(
                 curves = List(4) { channel -> List(5) { curves.getJSONArray(channel).getDouble(it).toFloat() } },
                 geometry = Geometry.decode(json.getJSONObject("geometry")),
                 useCoarseProfile = json.optBoolean("useCoarseProfile", true),
+                retouches = Retouch.decodeAll(json.optJSONArray("retouches")),
             )
         }
     }
