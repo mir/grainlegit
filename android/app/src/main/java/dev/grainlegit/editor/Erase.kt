@@ -3,11 +3,18 @@ package dev.grainlegit.editor
 import ai.onnxruntime.OrtException
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BlendMode
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.RuntimeShader
 import android.util.Log
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -56,6 +63,10 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 
 internal enum class EraseMode(val title: String) { Select("Select"), Brush("Brush"), Unbrush("Erase brush") }
+
+internal enum class EraseWork(val title: String) {
+    Preparing("Preparing selection…"), Finding("Finding object…"), Removing("Removing…"),
+}
 
 /** One compiled copy per app process. Each GPU delegate stays on its own worker thread. */
 internal class EraseEngine private constructor(context: Context) {
@@ -156,12 +167,13 @@ internal class EraseState(val output: IntSize, initial: List<Retouch>) {
     var draft by mutableStateOf(initial)
     var mode by mutableStateOf(EraseMode.Select)
     var brush by mutableStateOf(Tool.BrushSize.initial)
-    var busy by mutableStateOf<String?>(null)
+    var busy by mutableStateOf<EraseWork?>(null)
     var message by mutableStateOf<String?>(null)
     var candidates by mutableStateOf<List<RemovalCandidate>>(emptyList())
     var chosen by mutableIntStateOf(0)
     var operation: Job? = null
-    private var selectionBounds: Rect? = null
+    var selectionBounds: Rect? = null
+        private set
     var hasSelection by mutableStateOf(false)
         private set
     var canUndoSelection by mutableStateOf(false)
@@ -283,7 +295,7 @@ internal suspend fun PointerInputScope.eraseGestures(
 }
 
 @Composable
-internal fun EraseOverlay(state: EraseState, camera: Camera?, viewport: IntSize) {
+internal fun EraseOverlay(state: EraseState, camera: Camera?, viewport: IntSize, work: EraseWork?) {
     val view = camera ?: return
     val matrix = remember(state, view, viewport) {
         Matrix().apply {
@@ -304,6 +316,7 @@ internal fun EraseOverlay(state: EraseState, camera: Camera?, viewport: IntSize)
     val maskBounds = remember(state) {
         RectF(0f, 0f, state.selection.width.toFloat(), state.selection.height.toFloat())
     }
+    val removing = work == EraseWork.Removing
     Canvas(Modifier.fillMaxSize()) {
         @Suppress("UNUSED_VARIABLE") val version = state.version
         drawIntoCanvas {
@@ -311,6 +324,7 @@ internal fun EraseOverlay(state: EraseState, camera: Camera?, viewport: IntSize)
             val mask = state.selection.mask
             val stroke = state.liveStroke
             if (stroke == null) {
+                tinted.alpha = if (removing) 56 else 140
                 canvas.drawBitmap(mask, matrix, tinted)
             } else {
                 val saved = canvas.save()
@@ -321,6 +335,62 @@ internal fun EraseOverlay(state: EraseState, camera: Camera?, viewport: IntSize)
                 canvas.drawBitmap(mask, null, maskBounds, opaque)
                 stroke.draw(canvas, opaque.color)
                 canvas.restoreToCount(saved)
+            }
+        }
+    }
+    if (work != null) EraseWaves(state, view, viewport, matrix, removing)
+}
+
+private const val ERASE_WAVE_SHADER = """
+    uniform float phase;
+    uniform float spacing;
+
+    half4 main(float2 pixel) {
+        float2 p = pixel / spacing;
+        float wave = p.y + 0.25 * p.x + 0.19 * sin(2.4 * p.x);
+        float crest = 0.5 + 0.5 * cos(6.283185 * (wave - phase));
+        half alpha = half(0.13 * crest * crest * crest);
+        return half4(alpha, alpha, alpha, alpha);
+    }
+"""
+
+@Composable
+private fun EraseWaves(state: EraseState, view: Camera, viewport: IntSize, matrix: Matrix, masked: Boolean) {
+    val phase by rememberInfiniteTransition(label = "Erase waves").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1550, easing = LinearEasing)),
+        label = "Wave phase",
+    )
+    val shader = remember { RuntimeShader(ERASE_WAVE_SHADER) }
+    val wavePaint = remember(shader) { Paint().apply { this.shader = shader } }
+    val maskPaint = remember { Paint(Paint.FILTER_BITMAP_FLAG).apply { blendMode = BlendMode.DST_IN } }
+    val bounds = remember { RectF() }
+    val left = viewport.width / 2f - view.center.x * view.scale
+    val top = viewport.height / 2f - view.center.y * view.scale
+
+    Canvas(Modifier.fillMaxSize()) {
+        if (masked) {
+            // Read the committed mask and its bounds in the draw phase, as in the brush overlay.
+            @Suppress("UNUSED_VARIABLE") val version = state.version
+            val selection = state.selectionBounds ?: return@Canvas
+            bounds.set(left + selection.left * view.scale, top + selection.top * view.scale,
+                left + selection.right * view.scale, top + selection.bottom * view.scale)
+        } else {
+            bounds.set(left, top, left + state.output.width * view.scale, top + state.output.height * view.scale)
+        }
+        if (!bounds.intersect(0f, 0f, size.width, size.height)) return@Canvas
+        shader.setFloatUniform("spacing", 116.dp.toPx())
+        shader.setFloatUniform("phase", phase)
+        drawIntoCanvas {
+            val canvas = it.nativeCanvas
+            if (masked) {
+                val layer = canvas.saveLayer(bounds, null)
+                canvas.drawRect(bounds, wavePaint)
+                canvas.drawBitmap(state.selection.mask, matrix, maskPaint)
+                canvas.restoreToCount(layer)
+            } else {
+                canvas.drawRect(bounds, wavePaint)
             }
         }
     }

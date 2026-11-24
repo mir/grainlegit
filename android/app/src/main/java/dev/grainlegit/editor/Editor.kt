@@ -363,20 +363,36 @@ internal fun Editor() {
     }
 
     val selectionDraft = erase
-    LaunchedEffect(selectionDraft?.mode, active?.selectionImageKey) {
+    val selectionMode = selectionDraft?.mode
+    val selectionImageKey = active?.selectionImageKey
+    var preparingSelection by remember(selectionDraft, selectionMode, selectionImageKey) { mutableStateOf(false) }
+    LaunchedEffect(selectionDraft, selectionMode, selectionImageKey) {
         val state = selectionDraft ?: return@LaunchedEffect
         val shown = active ?: return@LaunchedEffect
         val input = original ?: return@LaunchedEffect
-        if (state.mode != EraseMode.Select || shown.retouches != state.draft ||
+        if (selectionMode != EraseMode.Select || shown.retouches != state.draft ||
             shown.layout.output != state.output || shown.photo != input.photo) return@LaunchedEffect
+        preparingSelection = true
         try {
             eraseEngine.prepareSelection(shown.selectionImageKey) { selectionImage(input, shown) }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
             Log.w("Grainlegit", "Could not prepare the photo for selection", error)
+        } finally {
+            preparingSelection = false
         }
     }
+    val eraseWork = selectionDraft?.busy ?: EraseWork.Preparing.takeIf { preparingSelection }
+    val eraseWorking = eraseWork != null
+    var showEraseWork by remember(eraseWorking) { mutableStateOf(false) }
+    LaunchedEffect(eraseWorking) {
+        if (eraseWorking) {
+            delay(140)
+            showEraseWork = true
+        }
+    }
+    val shownEraseWork = eraseWork.takeIf { showEraseWork }
 
     val cropSourceSize = active?.takeIf { cropping && it.geometry == sourceGeometry }?.photo?.size
     // Changing the window leaves the cached image, camera, and presentation matrix alone.
@@ -477,7 +493,7 @@ internal fun Editor() {
         val input = original ?: return
         if (shown.retouches != state.draft || shown.layout.output != output || shown.photo != input.photo) return
         state.message = null
-        state.busy = "Finding object…"
+        state.busy = EraseWork.Finding
         state.operation = scope.launch {
             try {
                 val start = System.nanoTime()
@@ -509,7 +525,7 @@ internal fun Editor() {
         val state = erase ?: return
         val shown = active ?: return
         if (shown.retouches != state.draft || state.busy != null || state.liveStroke != null) return
-        state.busy = "Removing…"
+        state.busy = EraseWork.Removing
         state.message = null
         state.operation = scope.launch {
             try {
@@ -707,7 +723,7 @@ internal fun Editor() {
             Box(Modifier.fillMaxWidth().weight(1f).background(background)
                 .onSizeChanged { viewport = it }.then(gestures), contentAlignment = Alignment.Center) {
                 PreviewSurface(renderer)
-                if (erasing != null) EraseOverlay(erasing, view, viewport)
+                if (erasing != null) EraseOverlay(erasing, view, viewport, shownEraseWork)
                 if (cropWindow != null && cropPreview != null) {
                     val photoArea = ScreenRect(viewport.center() - cropPreview.output.center() * fit,
                         Size(cropPreview.output.width * fit, cropPreview.output.height * fit))
@@ -719,10 +735,13 @@ internal fun Editor() {
                         SampleTarget(topLeft + Offset(point.x.toFloat(), point.y.toFloat()) * fit)
                     }
                 }
-                val status = photoError ?: renderError ?: erasing?.busy ?: erasing?.message ?: if (opening || (active == null && original != null)) {
-                    "Opening photo…"
-                } else null
-                if (status != null) Surface(color = panelColor, shape = RoundedCornerShape(12.dp)) {
+                val status = photoError ?: renderError ?: shownEraseWork?.title ?: erasing?.message
+                    ?: "Opening photo…".takeIf { opening || (active == null && original != null) }
+                if (status != null) Surface(
+                    modifier = if (shownEraseWork != null) Modifier.align(Alignment.TopCenter).padding(top = 12.dp)
+                        else Modifier,
+                    color = panelColor, shape = RoundedCornerShape(12.dp),
+                ) {
                     Text(status, Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                 }
             }
