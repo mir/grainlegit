@@ -298,6 +298,22 @@ internal fun Editor() {
         val closing = erase
         onDispose { closing?.dispose() }
     }
+    // OSOR stays loaded while Erase is open, so only the first removal waits for its graphs.
+    val eraseOpen = erase != null
+    LaunchedEffect(eraseOpen, osorInstalled) {
+        val directory = osorAssets?.directory
+        if (!eraseOpen || !osorInstalled || directory == null) return@LaunchedEffect
+        try {
+            eraseEngine.warmOsor(directory)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w("Grainlegit", "Could not preload OSOR", error)
+        }
+    }
+    DisposableEffect(eraseOpen) {
+        onDispose { if (eraseOpen) eraseEngine.releaseOsor() }
+    }
     val picker = rememberLauncherForActivityResult(PickVisualMedia()) { chosen ->
         if (chosen != null) {
             runCatching { resolver.takePersistableUriPermission(chosen, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
@@ -393,7 +409,7 @@ internal fun Editor() {
             Log.w("Grainlegit", "Could not warm object selection", error)
         }
         try {
-            if (!osorInstalled) eraseEngine.warmRemoval()
+            eraseEngine.warmRemoval()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -566,7 +582,7 @@ internal fun Editor() {
         val state = erase ?: return
         val shown = active ?: return
         if (shown.retouches != state.draft || state.busy != null || state.liveStroke != null) return
-        val osorDirectory = osorAssets?.directory?.takeIf { osorInstalled && state.preferOsor }
+        val osorDirectory = osorAssets?.directory?.takeIf { osorInstalled }
         state.busy = EraseWork.Removing
         state.message = null
         state.operation = scope.launch {
@@ -575,13 +591,32 @@ internal fun Editor() {
                 val remover = Remover(shown.photo, shown.layout, resolver)
                 val start = System.nanoTime()
                 val selection = state.snapshot() ?: return@launch
-                val candidates = selection.use { eraseEngine.remove(remover, it, existing, osorDirectory) }
+                var quick: RemovalCandidate? = null
+                val precise = try {
+                    selection.use {
+                        eraseEngine.remove(remover, it, existing, osorDirectory) { candidate ->
+                            if (erase !== state) return@remove
+                            Log.i("Grainlegit", "Instant fill in ${(System.nanoTime() - start) / 1_000_000} ms " +
+                                "(${candidate.label} ${"%.0f".format(candidate.ms)} ms)")
+                            quick = candidate
+                            state.draft = existing + candidate.retouch
+                            state.busy = EraseWork.Refining
+                        }
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    if (quick == null) throw error
+                    Log.e("Grainlegit", "Precise removal failed, keeping the instant fill", error)
+                    state.message = "Kept the quick fill: ${error.message ?: "precise removal failed"}"
+                    null
+                }
                 if (erase !== state) return@launch
-                Log.i("Grainlegit", "Removed in ${(System.nanoTime() - start) / 1_000_000} ms: " +
-                    candidates.joinToString { "${it.label} ${"%.0f".format(it.ms)} ms" })
-                state.candidates = candidates
-                state.chosen = 0
-                state.draft = existing + candidates.first().retouch
+                if (precise != null) {
+                    Log.i("Grainlegit", "Precise fill in ${(System.nanoTime() - start) / 1_000_000} ms " +
+                        "(${precise.label} ${"%.0f".format(precise.ms)} ms)")
+                    state.draft = existing + precise.retouch
+                }
                 state.selection.reset()
                 state.selectionChanged()
             } catch (cancelled: CancellationException) {
@@ -826,19 +861,10 @@ internal fun Editor() {
             when {
                 erasing != null -> {
                     EraseControls(erasing, modelControls = {
-                        if (osorAssets != null) {
+                        if (osorAssets != null && !osorInstalled) {
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 when {
-                                    osorInstalled -> {
-                                        Text("Removal model", color = muted, style = MaterialTheme.typography.labelMedium)
-                                        EditorChip("Standard", selected = !erasing.preferOsor) {
-                                            if (erasing.busy == null) erasing.preferOsor = false
-                                        }
-                                        EditorChip("OSOR", selected = erasing.preferOsor) {
-                                            if (erasing.busy == null) erasing.preferOsor = true
-                                        }
-                                    }
                                     osorDownload != null -> {
                                         Text("OSOR $osorProgress%", color = muted, style = MaterialTheme.typography.labelMedium)
                                         LinearProgressIndicator(progress = { osorProgress / 100f }, modifier = Modifier.weight(1f))

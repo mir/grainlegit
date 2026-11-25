@@ -21,8 +21,12 @@ import java.util.Map;
 import java.util.Random;
 import org.json.JSONObject;
 
-/** The precompiled 512 px SDXL Phase II pipeline, loaded one NPU graph at a time. */
-final class OsorModel {
+/**
+ * The precompiled 512 px SDXL Phase II pipeline. Graph sessions stay open between removals so only
+ * the first one pays for loading them. If the NPU cannot hold every graph at once, the model falls
+ * back to loading each graph for its run and closing it afterwards.
+ */
+final class OsorModel implements AutoCloseable {
     static final int SIDE = 512;
     static final int LATENT_SIDE = SIDE / 8;
     static final String TAG = "GrainlegitOSOR";
@@ -30,12 +34,18 @@ final class OsorModel {
         "01-down0", "02-down1", "03-down2-0", "04-down2-1", "05-middle",
         "06-up0-0", "07-up0-1", "08-up0-2", "09-up1", "10-output"
     );
+    private static final List<String> STAGES = List.of(
+        "vae-encoder", "01-down0", "02-down1", "03-down2-0", "04-down2-1", "05-middle",
+        "06-up0-0", "07-up0-1", "08-up0-2", "09-up1", "10-output", "vae-decoder"
+    );
 
     private final OrtEnvironment runtime = OrtEnvironment.getEnvironment();
     private final OrtEpDevice npu;
     private final File models;
     private final float alphaCumulative;
     private final float vaeScale;
+    private final Map<String, OrtSession> sessions = new HashMap<>();
+    private boolean oneAtATime = false;
 
     OsorModel(File models, File libraryDir) throws Exception {
         this.models = models;
@@ -46,7 +56,24 @@ final class OsorModel {
         vaeScale = (float) config.getDouble("vae_scale");
     }
 
-    int[] erase(int[] photo, boolean[] hole, Runnable checkActive) throws Exception {
+    /** Open every graph session now, so the next removal only runs them. */
+    synchronized void preload(Runnable checkActive) throws Exception {
+        for (String stage : STAGES) {
+            if (oneAtATime) return;
+            checkActive.run();
+            long start = SystemClock.elapsedRealtime();
+            OrtSession session = session(stage);
+            if (!oneAtATime) Log.i(TAG, stage + " preload=" + (SystemClock.elapsedRealtime() - start) + "ms");
+            else session.close();
+        }
+    }
+
+    @Override
+    public synchronized void close() {
+        closeSessions();
+    }
+
+    synchronized int[] erase(int[] photo, boolean[] hole, Runnable checkActive) throws Exception {
         int area = SIDE * SIDE;
         if (photo.length != area || hole.length != area) {
             throw new IllegalArgumentException("OSOR requires a 512 × 512 image and mask");
@@ -108,40 +135,80 @@ final class OsorModel {
         return pixels;
     }
 
-    private Map<String, float[]> run(String stage, Map<String, float[]> values) throws Exception {
-        long start = SystemClock.elapsedRealtime();
+    /**
+     * The open session for [stage]. When opening one fails while others are open, the NPU is out of
+     * room: close them all and keep loading one graph at a time from then on.
+     */
+    private OrtSession session(String stage) throws Exception {
+        OrtSession cached = sessions.get(stage);
+        if (cached != null) return cached;
+        OrtSession session;
+        try {
+            session = open(stage);
+        } catch (Exception error) {
+            if (sessions.isEmpty()) throw error;
+            Log.w(TAG, "Could not keep " + stage + " loaded with " + sessions.size()
+                + " other graphs; loading one graph at a time", error);
+            closeSessions();
+            oneAtATime = true;
+            return open(stage);
+        }
+        if (!oneAtATime) sessions.put(stage, session);
+        return session;
+    }
+
+    private OrtSession open(String stage) throws Exception {
         File wrapper = new File(models, stage + ".onnx");
         if (!wrapper.isFile()) throw new IllegalStateException("Missing compiled graph " + stage);
         try (OrtSession.SessionOptions options = new OrtSession.SessionOptions()) {
             options.setIntraOpNumThreads(4);
             options.addExecutionProvider(List.of(npu), Map.of("backend_type", "htp", "htp_performance_mode", "burst"));
             options.addConfigEntry("session.disable_cpu_ep_fallback", "1");
-            try (OrtSession session = runtime.createSession(wrapper.getAbsolutePath(), options)) {
-                long loadedAt = SystemClock.elapsedRealtime();
-                Map<String, OnnxTensor> tensors = new HashMap<>();
-                try {
-                    for (var entry : session.getInputInfo().entrySet()) {
-                        String name = entry.getKey();
-                        float[] data = values.get(name);
-                        if (data == null) throw new IllegalStateException(stage + " has no input " + name);
-                        tensors.put(name, tensor(data, (TensorInfo) entry.getValue().getInfo()));
-                    }
-                    Map<String, float[]> outputs = new HashMap<>();
-                    try (OrtSession.Result inference = session.run(tensors)) {
-                        for (var entry : inference) {
-                            FloatBuffer buffer = ((OnnxTensor) entry.getValue()).getFloatBuffer();
-                            float[] copy = new float[buffer.remaining()];
-                            buffer.get(copy);
-                            outputs.put(entry.getKey(), copy);
-                        }
-                    }
-                    long finished = SystemClock.elapsedRealtime();
-                    Log.i(TAG, stage + " load=" + (loadedAt - start) + "ms run=" + (finished - loadedAt) + "ms");
-                    return outputs;
-                } finally {
-                    tensors.values().forEach(OnnxTensor::close);
-                }
+            return runtime.createSession(wrapper.getAbsolutePath(), options);
+        }
+    }
+
+    private void closeSessions() {
+        for (OrtSession session : sessions.values()) {
+            try {
+                session.close();
+            } catch (Exception error) {
+                Log.w(TAG, "Could not close an OSOR graph", error);
             }
+        }
+        sessions.clear();
+    }
+
+    private Map<String, float[]> run(String stage, Map<String, float[]> values) throws Exception {
+        long start = SystemClock.elapsedRealtime();
+        OrtSession session = session(stage);
+        try {
+            long loadedAt = SystemClock.elapsedRealtime();
+            Map<String, OnnxTensor> tensors = new HashMap<>();
+            try {
+                for (var entry : session.getInputInfo().entrySet()) {
+                    String name = entry.getKey();
+                    float[] data = values.get(name);
+                    if (data == null) throw new IllegalStateException(stage + " has no input " + name);
+                    tensors.put(name, tensor(data, (TensorInfo) entry.getValue().getInfo()));
+                }
+                Map<String, float[]> outputs = new HashMap<>();
+                try (OrtSession.Result inference = session.run(tensors)) {
+                    for (var entry : inference) {
+                        FloatBuffer buffer = ((OnnxTensor) entry.getValue()).getFloatBuffer();
+                        float[] copy = new float[buffer.remaining()];
+                        buffer.get(copy);
+                        outputs.put(entry.getKey(), copy);
+                    }
+                }
+                long finished = SystemClock.elapsedRealtime();
+                Log.i(TAG, stage + " load=" + (loadedAt - start) + "ms run=" + (finished - loadedAt) + "ms");
+                return outputs;
+            } finally {
+                tensors.values().forEach(OnnxTensor::close);
+            }
+        } finally {
+            if (oneAtATime) session.close();
         }
     }
 

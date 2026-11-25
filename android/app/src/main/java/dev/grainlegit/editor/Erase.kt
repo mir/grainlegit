@@ -59,15 +59,18 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.Executors
 
-internal enum class EraseMode(val title: String) { Select("Select"), Brush("Brush"), Unbrush("Erase brush") }
+internal enum class EraseMode(val title: String) { Select("Tap to select"), Brush("Brush"), Unbrush("Erase brush") }
 
 internal enum class EraseWork(val title: String) {
-    Preparing("Preparing selection…"), Finding("Finding object…"), Removing("Removing…"),
+    Preparing("Preparing selection…"), Finding("Finding object…"), Removing("Removing…"), Refining("Refining…"),
 }
 
 /** One compiled copy per app process. Each GPU delegate stays on its own worker thread. */
@@ -76,23 +79,25 @@ internal class EraseEngine private constructor(context: Context) {
         Executors.newSingleThreadExecutor { Thread(it, "Grainlegit selection ML") }.asCoroutineDispatcher()
     private val removalWorker: ExecutorCoroutineDispatcher =
         Executors.newSingleThreadExecutor { Thread(it, "Grainlegit removal ML") }.asCoroutineDispatcher()
+    // OSOR has its own thread so loading its graphs never holds up the instant MI-GAN fill.
+    private val osorWorker: ExecutorCoroutineDispatcher =
+        Executors.newSingleThreadExecutor { Thread(it, "Grainlegit OSOR") }.asCoroutineDispatcher()
+    /** Kept loaded while Erase is open: reopening its graphs costs about 4 s per removal. */
+    private var osor: Osor? = null
     private val selectionMl = Ml(context)
     private val application = context
     private var segmenter: ImageSegmenter? = null
     private var imageKey: Any? = null
     private val removalMl = Ml(context)
     private val miGan by lazy { MiGan(removalMl) }
-    private val inpainters by lazy {
-        val primary = miGan
-        buildList {
-            if ("lama_512.tflite" in context.assets.list("models").orEmpty()) {
-                try {
-                    add(Lama(removalMl, "lama_512.tflite", 512))
-                } catch (error: Exception) {
-                    Log.w("Grainlegit", "LaMa unavailable", error)
-                }
-            }
-            add(primary)
+    private val lama: Inpainter? by lazy {
+        if ("lama_512.tflite" !in context.assets.list("models").orEmpty()) null
+        else try {
+            // LaMa's DFT matmuls were verified on the GPU; NPU builds of it return noise.
+            Lama(removalMl, "lama_512.tflite", MODEL_SIDE, listOf(Backend.GPU, Backend.CPU))
+        } catch (error: Exception) {
+            Log.w("Grainlegit", "LaMa unavailable", error)
+            null
         }
     }
 
@@ -100,9 +105,38 @@ internal class EraseEngine private constructor(context: Context) {
         withContext(selectionWorker) { selectionModel() }
     }
 
+    /**
+     * Load MI-GAN for the instant fill. The precise model loads on first use, after the instant
+     * fill is on screen: preparing LaMa for the NPU can take a minute on a fresh install.
+     */
     suspend fun warmRemoval() {
         withContext(removalWorker) { miGan }
     }
+
+    /** Load OSOR's graphs ahead of the first removal. Runs on the OSOR thread. */
+    suspend fun warmOsor(directory: File) = withContext(osorWorker) {
+        val model = osorFor(directory)
+        model.checkActive = { coroutineContext.ensureActive() }
+        try {
+            model.preload()
+        } finally {
+            model.checkActive = {}
+        }
+    }
+
+    /** Free OSOR's graphs (about 4.3 GiB) when Erase closes or the system is short of memory. */
+    fun releaseOsor() {
+        CoroutineScope(osorWorker).launch {
+            osor?.close()
+            osor = null
+        }
+    }
+
+    private fun osorFor(directory: File): Osor =
+        osor?.takeIf { it.directory == directory } ?: run {
+            osor?.close()
+            Osor(application, directory).also { osor = it }
+        }
 
     suspend fun prepareSelection(key: Any, image: () -> Bitmap) {
         withContext(selectionWorker) { prepareImage(key, image) }
@@ -151,14 +185,30 @@ internal class EraseEngine private constructor(context: Context) {
         return model
     }
 
+    /**
+     * Fill the selection with MI-GAN and hand that to [instant] at once, then return the precise fill:
+     * OSOR when it is installed, otherwise LaMa. Returns null when no precise model is available.
+     */
     suspend fun remove(
         remover: Remover, selection: RemovalMask, existing: List<Retouch>, osorDirectory: File?,
-    ): List<RemovalCandidate> = withContext(removalWorker) {
-        if (osorDirectory == null) {
-            remover.remove(selection, existing, inpainters)
-        } else {
-            Osor(application, osorDirectory) { coroutineContext.ensureActive() }.use { model ->
-                remover.remove(selection, existing, listOf(model))
+        instant: (RemovalCandidate) -> Unit,
+    ): RemovalCandidate? = withContext(removalWorker) {
+        remover.prepare(selection, existing).use { prepared ->
+            val quick = prepared.inpaint(miGan)
+            withContext(Dispatchers.Main.immediate) { instant(quick) }
+            ensureActive()
+            if (osorDirectory != null) {
+                withContext(osorWorker) {
+                    val model = osorFor(osorDirectory)
+                    model.checkActive = { coroutineContext.ensureActive() }
+                    try {
+                        prepared.inpaint(model)
+                    } finally {
+                        model.checkActive = {}
+                    }
+                }
+            } else {
+                lama?.let(prepared::inpaint)
             }
         }
     }
@@ -178,11 +228,8 @@ internal class EraseState(val output: IntSize, initial: List<Retouch>) {
     var draft by mutableStateOf(initial)
     var mode by mutableStateOf(EraseMode.Select)
     var brush by mutableStateOf(Tool.BrushSize.initial)
-    var preferOsor by mutableStateOf(true)
     var busy by mutableStateOf<EraseWork?>(null)
     var message by mutableStateOf<String?>(null)
-    var candidates by mutableStateOf<List<RemovalCandidate>>(emptyList())
-    var chosen by mutableIntStateOf(0)
     var operation: Job? = null
     var selectionBounds: Rect? = null
         private set
@@ -222,17 +269,10 @@ internal class EraseState(val output: IntSize, initial: List<Retouch>) {
 
     fun cancelStroke() { liveStroke = null }
 
-    fun choose(index: Int) {
-        if (busy != null || liveStroke != null) return
-        val candidate = candidates.getOrNull(index) ?: return
-        draft = draft.dropLast(1) + candidate.retouch
-        chosen = index
-    }
-
     fun undo() {
         when {
             selection.canUndo -> { selection.undo(); selectionChanged() }
-            draft.isNotEmpty() -> { draft = draft.dropLast(1); candidates = emptyList() }
+            draft.isNotEmpty() -> draft = draft.dropLast(1)
         }
     }
 
@@ -328,14 +368,17 @@ internal fun EraseOverlay(state: EraseState, camera: Camera?, viewport: IntSize,
     val maskBounds = remember(state) {
         RectF(0f, 0f, state.selection.width.toFloat(), state.selection.height.toFloat())
     }
-    val removing = work == EraseWork.Removing
+    val removing = work == EraseWork.Removing || work == EraseWork.Refining
+    val refining = work == EraseWork.Refining
     Canvas(Modifier.fillMaxSize()) {
         @Suppress("UNUSED_VARIABLE") val version = state.version
         drawIntoCanvas {
             val canvas = it.nativeCanvas
             val mask = state.selection.mask
             val stroke = state.liveStroke
-            if (stroke == null) {
+            if (refining) {
+                // The quick fill is already drawn; leave it visible under the waves.
+            } else if (stroke == null) {
                 tinted.alpha = if (removing) 56 else 140
                 canvas.drawBitmap(mask, matrix, tinted)
             } else {
@@ -412,28 +455,13 @@ private fun EraseWaves(state: EraseState, view: Camera, viewport: IntSize, matri
 internal fun EraseControls(state: EraseState, modelControls: @Composable () -> Unit, remove: () -> Unit) {
     Column(Modifier.fillMaxWidth().background(panelColor).padding(horizontal = 16.dp)) {
         HorizontalDivider(color = dividerColor)
-        if (state.mode == EraseMode.Select) {
-            Column(Modifier.fillMaxWidth().height(77.dp).padding(top = 5.dp), verticalArrangement = Arrangement.Center) {
-                Text(if (state.hasSelection) "Tap more objects to add them" else "Tap an object to select it",
-                    color = ink, style = MaterialTheme.typography.bodyMedium)
-                Text("Use Brush for shadows and anything the selection misses", color = muted,
-                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
-            }
-        } else {
-            Ruler(Tool.BrushSize, state.brush, true, {}, { state.brush = it }, {})
-        }
+        if (state.mode != EraseMode.Select) Ruler(Tool.BrushSize, state.brush, true, {}, { state.brush = it }, {})
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
         ) {
             EraseMode.entries.forEach { mode ->
                 EditorChip(mode.title, selected = state.mode == mode) { state.mode = mode }
-            }
-            if (state.candidates.size > 1) {
-                Spacer(Modifier.width(6.dp))
-                state.candidates.forEachIndexed { index, candidate ->
-                    EditorChip(candidate.label, selected = state.chosen == index) { state.choose(index) }
-                }
             }
         }
         modelControls()

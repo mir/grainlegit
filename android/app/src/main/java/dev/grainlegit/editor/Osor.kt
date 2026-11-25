@@ -133,7 +133,7 @@ internal class OsorAssets(private val context: Context) {
     }
 }
 
-internal class Osor(context: Context, directory: File, private val checkActive: () -> Unit) : Inpainter {
+internal class Osor(context: Context, val directory: File) : Inpainter {
     private val start = SystemClock.elapsedRealtimeNanos()
     private val model = OsorModel(directory, File(context.applicationInfo.nativeLibraryDir))
     override val id = "osor-phase2"
@@ -143,6 +143,10 @@ internal class Osor(context: Context, directory: File, private val checkActive: 
     override val loadMs = elapsed(start)
     override var lastMs = 0.0
         private set
+    /** Throws when the caller's work is cancelled; checked between graphs. */
+    var checkActive: () -> Unit = {}
+
+    fun preload() = model.preload(checkActive)
 
     override fun inpaint(pixels: IntArray, hole: BooleanArray): IntArray {
         val started = SystemClock.elapsedRealtimeNanos()
@@ -151,7 +155,7 @@ internal class Osor(context: Context, directory: File, private val checkActive: 
         return result
     }
 
-    override fun close() = Unit
+    override fun close() = model.close()
 
     private fun elapsed(start: Long) = (SystemClock.elapsedRealtimeNanos() - start) / 1e6
 }

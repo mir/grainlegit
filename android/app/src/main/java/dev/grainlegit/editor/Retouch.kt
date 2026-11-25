@@ -38,16 +38,19 @@ internal data class Retouch(
     val width: Int,
     val height: Int,
     val model: String,
+    /** Noise to add over the patch when drawn, or null for patches saved before noise matching. */
+    val noise: PatchNoise? = null,
 ) {
     val bounds get() = Rect(left, top, left + width, top + height)
 
     fun encode(): JSONObject = JSONObject().put("patch", patch).put("left", left).put("top", top)
         .put("width", width).put("height", height).put("model", model)
+        .also { json -> noise?.let { json.put("noise", it.encode()) } }
 
     companion object {
         fun decode(o: JSONObject) = Retouch(
             o.getString("patch"), o.getInt("left"), o.getInt("top"), o.getInt("width"), o.getInt("height"),
-            o.optString("model"),
+            o.optString("model"), PatchNoise.decode(o.optJSONArray("noise")),
         )
 
         fun decodeAll(array: JSONArray?): List<Retouch> =
@@ -118,7 +121,31 @@ internal fun applyRetouches(target: Bitmap, region: Rect, retouches: List<Retouc
             (retouch.left - region.left) * sx, (retouch.top - region.top) * sy,
             (retouch.left + retouch.width - region.left) * sx, (retouch.top + retouch.height - region.top) * sy,
         )
-        canvas.drawBitmap(patch, null, destination, paint)
+        val noise = retouch.noise?.takeIf { it.visible }
+        if (noise == null) {
+            canvas.drawBitmap(patch, null, destination, paint)
+            continue
+        }
+        // Resample the patch onto this bitmap's pixel grid, then add noise keyed to source pixels.
+        val area = Rect(floor(destination.left).toInt(), floor(destination.top).toInt(),
+            ceil(destination.right).toInt(), ceil(destination.bottom).toInt())
+        if (!area.intersect(0, 0, result.width, result.height)) continue
+        val layer = Bitmap.createBitmap(area.width(), area.height(), Bitmap.Config.ARGB_8888)
+        try {
+            Canvas(layer).apply {
+                translate(-area.left.toFloat(), -area.top.toFloat())
+                drawBitmap(patch, null, destination, paint)
+            }
+            val pixels = IntArray(area.width() * area.height())
+            layer.getPixels(pixels, 0, area.width(), 0, 0, area.width(), area.height())
+            addNoise(pixels, area.width(), area.height(), noise, retouch.patch.hashCode(),
+                region.left + area.left / sx.toDouble(), region.top + area.top / sy.toDouble(),
+                1.0 / sx, 1.0 / sy, min(1f, sqrt(sx * sy)))
+            layer.setPixels(pixels, 0, area.width(), 0, 0, area.width(), area.height())
+            canvas.drawBitmap(layer, area.left.toFloat(), area.top.toFloat(), null)
+        } finally {
+            layer.recycle()
+        }
     }
     return result
 }
@@ -280,37 +307,65 @@ internal class Remover(
     private val resolver: android.content.ContentResolver,
 ) {
     /**
-     * Inpaint the selected area with each model and return one patch per model. [existing] removals
-     * are applied to the context first so successive removals build on each other.
+     * Decode the context square around [selection] once so several models can fill it. [existing]
+     * removals are applied to the context first so successive removals build on each other.
      */
-    fun remove(selection: RemovalMask, existing: List<Retouch>, models: List<Inpainter>): List<RemovalCandidate> {
+    fun prepare(selection: RemovalMask, existing: List<Retouch>, target: Int = MODEL_SIDE): Prepared {
         val sourceSelected = checkNotNull(layout.sourceRegion(selection.bounds)) { "The selection is outside the photo" }
-        val target = models.maxOf { it.size }
         val context = contextSquare(sourceSelected, photo.size, target)
 
         // Source pixels for the context square, decoded at the nearest power-of-two reduction.
         var sample = 1
         while (context.width() / (sample * 2) >= target && context.height() / (sample * 2) >= target) sample *= 2
-        val decoded = photo.openRegions(resolver).use { it.decode(context, sample) }
-        val withRetouches = applyRetouches(decoded, context, existing)
-
-        try {
-            return models.map { model ->
-                val size = model.size
-                val crop = Bitmap.createScaledBitmap(withRetouches, size, size, true)
-                val pixels = try {
-                    IntArray(size * size).also { crop.getPixels(it, 0, size, 0, 0, size, size) }
-                } finally {
-                    if (crop !== withRetouches) crop.recycle()
-                }
-                val hole = rasterizeHole(selection, context, size)
-                val inpainted = model.inpaint(pixels, hole)
-                val retouch = buildPatch(inpainted, hole, context, size, model.id)
-                RemovalCandidate(retouch, model.label, model.lastMs)
+        return photo.openRegions(resolver).use { regions ->
+            val decoded = regions.decode(context, sample)
+            val noise = try {
+                val tiles = noiseTiles(sourceSelected).map { regions.decode(it, 1) }
+                try { measureNoise(tiles) } finally { tiles.forEach(Bitmap::recycle) }
+            } catch (error: Exception) {
+                android.util.Log.w("Grainlegit", "Could not measure noise beside the selection", error)
+                null
             }
-        } finally {
-            withRetouches.recycle()
+            android.util.Log.i("Grainlegit", "Noise beside the selection: $noise")
+            Prepared(selection, context, applyRetouches(decoded, context, existing), noise)
         }
+    }
+
+    inner class Prepared internal constructor(
+        private val selection: RemovalMask,
+        private val context: Rect,
+        private val image: Bitmap,
+        val noise: PatchNoise?,
+    ) : Closeable {
+        fun inpaint(model: Inpainter): RemovalCandidate {
+            val size = model.size
+            val crop = Bitmap.createScaledBitmap(image, size, size, true)
+            val pixels = try {
+                IntArray(size * size).also { crop.getPixels(it, 0, size, 0, 0, size, size) }
+            } finally {
+                if (crop !== image) crop.recycle()
+            }
+            val hole = rasterizeHole(selection, context, size)
+            val inpainted = model.inpaint(pixels, hole)
+            val retouch = buildPatch(inpainted, hole, context, size, model.id, noise)
+            return RemovalCandidate(retouch, model.label, model.lastMs)
+        }
+
+        override fun close() = image.recycle()
+    }
+
+    /** Full-resolution tiles left, right, above and below the selection, clear of its soft edge. */
+    private fun noiseTiles(selected: Rect): List<Rect> {
+        val gap = max(8, max(selected.width(), selected.height()) / 10)
+        val half = NOISE_TILE / 2
+        val cx = selected.centerX()
+        val cy = selected.centerY()
+        return listOf(
+            Rect(selected.left - gap - NOISE_TILE, cy - half, selected.left - gap, cy + half),
+            Rect(selected.right + gap, cy - half, selected.right + gap + NOISE_TILE, cy + half),
+            Rect(cx - half, selected.top - gap - NOISE_TILE, cx + half, selected.top - gap),
+            Rect(cx - half, selected.bottom + gap, cx + half, selected.bottom + gap + NOISE_TILE),
+        ).filter { it.intersect(0, 0, photo.size.width, photo.size.height) && it.width() >= 32 && it.height() >= 32 }
     }
 
     /** Selection → model-space hole mask, dilated so the fill covers the object's soft edge. */
@@ -331,7 +386,9 @@ internal class Remover(
         return dilate(hole, size, max(3, (size * 0.012f).roundToInt()))
     }
 
-    private fun buildPatch(inpainted: IntArray, hole: BooleanArray, context: Rect, size: Int, model: String): Retouch {
+    private fun buildPatch(
+        inpainted: IntArray, hole: BooleanArray, context: Rect, size: Int, model: String, noise: PatchNoise?,
+    ): Retouch {
         val feather = max(2, (size * 0.01f).roundToInt())
         val alpha = featherMask(hole, size, feather)
         // Patch bounds in model pixels: every pixel the feathered mask touches.
@@ -364,9 +421,13 @@ internal class Remover(
         val patch = Bitmap.createScaledBitmap(modelPatch, patchWidth, patchHeight, true)
         if (patch !== modelPatch) modelPatch.recycle()
         val name = PatchStore.save(patch)
-        return Retouch(name, sourceRect.left, sourceRect.top, sourceRect.width(), sourceRect.height(), model)
+        return Retouch(name, sourceRect.left, sourceRect.top, sourceRect.width(), sourceRect.height(), model, noise)
     }
 }
+
+/** Every removal model runs at this square size. */
+internal const val MODEL_SIDE = 512
+private const val NOISE_TILE = 160
 
 /** A square around [selected] with room for context, kept inside the photo where possible. */
 internal fun contextSquare(selected: Rect, photo: androidx.compose.ui.unit.IntSize, modelSize: Int): Rect {

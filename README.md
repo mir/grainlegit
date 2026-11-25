@@ -49,7 +49,7 @@ Take Portra 400 on 35 mm. Each control changes one physical property of the nega
 ## On-device rendering and AI
 
 - **GPU renderer.** A Rust engine runs WGSL compute shaders through `wgpu` on Vulkan. It draws a Poisson count of clouds at each site at twice the output resolution, blurs them with the cloud shapes, and averages the light the way a scanner would. The preview always renders the latest edit. At 100% it renders a full-resolution crop of the area on screen.
-- **Erase with local AI.** Tap an object and SAM 3.1 selects it, or paint the area with the brush. LaMa or MI-GAN fills it in. On Snapdragon 8 Elite Gen 5 (SM8850), the precompiled SAM 3.1 encoder runs on the Hexagon NPU. OSOR is an optional removal model, a one-time 4.3 GiB download, that also runs on the NPU.
+- **Erase with local AI.** Tap an object and SAM 3.1 selects it, or paint the area with the brush. MI-GAN shows a fill at once, then a more precise model replaces it: LaMa, or OSOR when installed. Fills get noise measured from the surrounding photo, so they don't read as smooth patches. On Snapdragon 8 Elite Gen 5 (SM8850), the precompiled SAM 3.1 encoder runs on the Hexagon NPU. OSOR is an optional removal model, a one-time 4.3 GiB download, that also runs on the NPU.
 - **Private by default.** Photos never leave the phone. The original file is never changed. Exports go to `Pictures/Grainlegit` as full-resolution sRGB JPEGs.
 
 ### Android editor
@@ -100,7 +100,7 @@ Use the [SAM 3.1 ONNX export](https://huggingface.co/smile-forge/sam3.1-onnx/tre
 
 Build the unsigned APK with `android/gradlew -p android :app:assembleRelease`. Run `scripts/package-android-sm8850 MODEL_DIR OUTPUT_APK` to add the precompiled model, align and sign the APK. The script uses `release.p12` and `release.pass` in `${XDG_CONFIG_HOME:-$HOME/.config}/grainlegit`. Override the paths with `GRAINLEGIT_RELEASE_KEYSTORE` and `GRAINLEGIT_RELEASE_PASSWORD_FILE`.
 
-On SM8850, open **Erase → Download OSOR** to install the Phase II removal model. It uses about 4.3 GiB of storage and runs on the phone's NPU. Once installed, choose **OSOR** or **Standard** in the Erase controls.
+On SM8850, open **Erase → Download OSOR** to install the Phase II removal model. It uses about 4.3 GiB of storage and runs on the phone's NPU. Once installed, Erase uses it for the precise fill.
 
 For the model release assets, run `scripts/package-osor-sm8850 COMPILED_MODEL_DIR OUTPUT_DIR`. It checks the pinned context hashes before creating three packs with the [model license](android/app/src/main/assets/licenses/OSOR-SDXL-Model.txt) and [provenance notice](android/app/src/main/assets/licenses/OSOR-SDXL-NOTICE.txt).
 

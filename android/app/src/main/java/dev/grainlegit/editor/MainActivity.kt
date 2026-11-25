@@ -58,4 +58,10 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // OSOR holds about 4.3 GiB; it reloads on the next removal if Erase is still open.
+        if (level >= TRIM_MEMORY_UI_HIDDEN) EraseEngine.get(this).releaseOsor()
+    }
 }
