@@ -87,9 +87,12 @@ fn cloud_radius(sigma: f64) -> usize {
 /// Reference photo area for Auto grain: the editor's viewport on a 1200 × 2608 px phone with
 /// the bottom panel open. Fit shrinks photos to this size and never enlarges them.
 const AUTO_VIEW: [f64; 2] = [1200.0, 1500.0];
-/// Fine-cloud sigma, in screen pixels at Fit, that viewers picked as just clearly visible
-/// across 0.3–200 MP photos.
-const AUTO_SCREEN_SIGMA: f64 = 1.1;
+/// Luma-weighted fine-cloud sigma, in screen pixels at Fit, that viewers picked as just clearly
+/// visible across 0.3–200 MP photos: their 1.1 px mean over the layers of the earlier Generic
+/// profile (2.2, 2.0, 2.35 µm) is 1.058 px luma-weighted.
+const AUTO_SCREEN_SIGMA: f64 = 1.1 * (0.2126 * 2.2 + 0.7152 * 2.0 + 0.0722 * 2.35) / ((2.2 + 2.0 + 2.35) / 3.0);
+/// Visibility is mostly luminance, so the fine-cloud reference weights layers by Rec. 709 luma.
+const LUMA: [f64; 3] = [0.2126, 0.7152, 0.0722];
 
 /// Grain size multiplier that makes the negative's fine clouds visible at Fit.
 ///
@@ -107,9 +110,8 @@ pub fn auto_grain_size(width: u32, height: u32, settings: &Settings) -> f64 {
     let edge = width.max(height) as u32;
     let layers = &material(&unit, false).layers;
     let fine = (0..3)
-        .map(|layer| sigma(edge, &unit, false, layer, layers[layer][0][0]))
-        .sum::<f64>()
-        / 3.0;
+        .map(|layer| LUMA[layer] * sigma(edge, &unit, false, layer, layers[layer][0][0]))
+        .sum::<f64>();
     let widest = (0..3)
         .flat_map(|layer| layers[layer].iter().map(move |cloud| (layer, cloud[0])))
         .map(|(layer, diameter)| sigma(edge, &unit, false, layer, diameter))
@@ -382,9 +384,8 @@ mod tests {
         let edge = width.max(height);
         let layers = &material(&sized, false).layers;
         let fine = (0..3)
-            .map(|l| sigma(edge, &sized, false, l, layers[l][0][0]))
-            .sum::<f64>()
-            / 3.0;
+            .map(|l| LUMA[l] * sigma(edge, &sized, false, l, layers[l][0][0]))
+            .sum::<f64>();
         let fit = (1200.0 / f64::from(width))
             .min(1500.0 / f64::from(height))
             .min(1.0);
@@ -402,7 +403,7 @@ mod tests {
             [3000, 4000],
         ] {
             let seen = fit_sigma(width, height, &settings);
-            assert!((seen - 1.1).abs() < 1e-9, "{width}×{height}: {seen}");
+            assert!((seen - AUTO_SCREEN_SIGMA).abs() < 1e-9, "{width}×{height}: {seen}");
         }
     }
 
@@ -437,7 +438,7 @@ mod tests {
             ..base
         };
         assert!(auto_grain_size(4000, 3000, &ektar) > size);
-        assert!((fit_sigma(4000, 3000, &ektar) - 1.1).abs() < 1e-9);
+        assert!((fit_sigma(4000, 3000, &ektar) - AUTO_SCREEN_SIGMA).abs() < 1e-9);
     }
 
     #[test]

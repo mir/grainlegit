@@ -75,6 +75,7 @@ internal suspend fun savePhoto(
             ensureActive()
             NativeRenderer.encodeJpeg(rows.absolutePath, jpeg.absolutePath, size.width, size.height, cancelled)
             ensureActive()
+            writeBakedGrain(jpeg, edit, seed, edge)
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, "Grainlegit_${System.currentTimeMillis()}.jpg")
                 put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")

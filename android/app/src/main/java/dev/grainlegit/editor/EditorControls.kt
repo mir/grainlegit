@@ -70,7 +70,7 @@ private val adjustmentTools = listOf(
     Tool.Vibrance, Tool.WhiteBalance, Tool.Temperature, Tool.Tint, Tool.Saturation, Tool.Sharpen,
 )
 private val grainTools = listOf(
-    Tool.CameraExposure, Tool.Grain, Tool.GrainSize, Tool.GrainColour, Tool.GrainLoad, Tool.CoarseFraction,
+    Tool.CameraExposure, Tool.Grain, Tool.GrainSize, Tool.GrainStrength, Tool.GrainTone, Tool.GrainColour, Tool.GrainLoad, Tool.CoarseFraction,
     Tool.RedCloudSize, Tool.GreenCloudSize, Tool.BlueCloudSize, Tool.Development,
 )
 
@@ -169,6 +169,8 @@ private fun Tool.chipTitle() = when (this) {
     Tool.CameraExposure -> "Exposure"
     Tool.Grain -> "Amount"
     Tool.GrainSize -> "Size"
+    Tool.GrainStrength -> "Strength"
+    Tool.GrainTone -> "Tone"
     Tool.RedCloudSize -> "Red size"
     Tool.GreenCloudSize -> "Green size"
     Tool.BlueCloudSize -> "Blue size"

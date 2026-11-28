@@ -202,13 +202,13 @@ internal class EraseEngine private constructor(context: Context) {
                     val model = osorFor(osorDirectory)
                     model.checkActive = { coroutineContext.ensureActive() }
                     try {
-                        prepared.inpaint(model)
+                        prepared.inpaint(model, refine = true)
                     } finally {
                         model.checkActive = {}
                     }
                 }
             } else {
-                lama?.let(prepared::inpaint)
+                lama?.let { prepared.inpaint(it, refine = true) }
             }
         }
     }
@@ -268,6 +268,15 @@ internal class EraseState(val output: IntSize, initial: List<Retouch>) {
     }
 
     fun cancelStroke() { liveStroke = null }
+
+    /** The last removal when it can show detail or grain separately, for comparing the stages. */
+    val stages get() = draft.lastOrNull()?.takeIf { it.detail != null || it.grain != null }
+
+    fun toggleStage(detail: Boolean) {
+        val last = stages ?: return
+        if (busy != null || liveStroke != null) return
+        draft = draft.dropLast(1) + if (detail) last.copy(useDetail = !last.useDetail) else last.copy(useGrain = !last.useGrain)
+    }
 
     fun undo() {
         when {
@@ -462,6 +471,12 @@ internal fun EraseControls(state: EraseState, modelControls: @Composable () -> U
         ) {
             EraseMode.entries.forEach { mode ->
                 EditorChip(mode.title, selected = state.mode == mode) { state.mode = mode }
+            }
+            // Temporary controls for comparing the refinement stages on the last removal.
+            state.stages?.let { last ->
+                Spacer(Modifier.width(6.dp))
+                if (last.detail != null) EditorChip("Detail", selected = last.useDetail) { state.toggleStage(detail = true) }
+                if (last.grain != null) EditorChip("Grain", selected = last.useGrain) { state.toggleStage(detail = false) }
             }
         }
         modelControls()

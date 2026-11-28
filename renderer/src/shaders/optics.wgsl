@@ -8,6 +8,9 @@ struct Optics {
     knee: f32,
     exposure_span: f32,
     grain_colour: f32,
+    grain_strength: f32,
+    grain_tone: f32,
+    unused: vec2<u32>,
 }
 
 @group(0) @binding(0) var input: texture_2d<f32>;
@@ -39,7 +42,13 @@ fn balance(@builtin(global_invocation_id) at: vec3<u32>) {
     let formed = textureLoad(input, point, 0).rgb;
     let shift = log2(max(formed, vec3(1.0)) / max(base, vec3(1.0)));
     let neutral = dot(shift, vec3(0.2126, 0.7152, 0.0722));
-    let balanced = base * exp2(mix(vec3(neutral), shift, info.grain_colour));
+    let mixed = base * exp2(mix(vec3(neutral), shift, info.grain_colour));
+    // Strength and tone scale the deviation in light, which keeps the mean light. The tone weight
+    // follows the negative's density: dense negative is a bright scan.
+    let density = clamp(-log2(max(base, vec3(1.0)) / 65535.0) / (3.3219280949 * info.density_range),
+        vec3(0.0), vec3(1.0));
+    let weight = info.grain_strength * exp2(info.grain_tone * (2.0 * density - 1.0));
+    let balanced = max(base + (mixed - base) * weight, vec3(0.0));
     textureStore(light, point, vec4(round(clamp(balanced, vec3(0.0), vec3(65535.0))), 1.0));
 }
 

@@ -21,6 +21,10 @@ pub struct Settings {
     pub scan_blur: f64,
     pub scan_aperture: f64,
     pub grain_colour: f64,
+    /// Contrast of the negative's grain around its mean light; 1 is the simulated amount.
+    pub grain_strength: f64,
+    /// Grain balance from shadows (-1, up to 2× there) to highlights (+1, up to 2× there).
+    pub grain_tone: f64,
     pub print_medium: u32,
     pub negative_stock: u32,
 }
@@ -66,6 +70,8 @@ impl Default for Settings {
             scan_blur: 0.0,
             scan_aperture: 1.0,
             grain_colour: 1.0,
+            grain_strength: 1.0,
+            grain_tone: 0.0,
             print_medium: 0,
             negative_stock: 0,
         }

@@ -267,8 +267,9 @@ impl LockedBitmap {
             return Err("Expected a software RGBA_8888 bitmap".into());
         }
         let mut pointer = std::ptr::null_mut();
-        if unsafe { AndroidBitmap_lockPixels(env, bitmap, &mut pointer) } != 0 {
-            return Err("Android could not lock the bitmap pixels".into());
+        let status = unsafe { AndroidBitmap_lockPixels(env, bitmap, &mut pointer) };
+        if status != 0 {
+            return Err(format!("Android could not lock the bitmap pixels ({status})"));
         }
         let Some(pixels) = NonNull::new(pointer) else {
             unsafe { AndroidBitmap_unlockPixels(env, bitmap) };

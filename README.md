@@ -39,6 +39,8 @@ Take Portra 400 on 35 mm. Each control changes one physical property of the nega
 | **Exposure** | Exposure of the negative before it is scanned | Moves tones along the stock's curve. Thin, underexposed areas look different from dense ones. |
 | **Amount** | Clouds are larger and each carries more dye, with fewer of them for the same density | Stronger grain without changing tone |
 | **Size** | Scales every cloud | Coarser or finer grain |
+| **Strength** | Scales how far the scan's light swings around its mean, 0–2× | Weaker or stronger grain with brightness unchanged |
+| **Tone** | Weights grain by negative density, up to 2× either way | Grain gathers in the highlights or in the shadows; 0 keeps the stock's balance |
 | **Colour** | How independently the three dye layers vary | 0% is neutral grain; 100% shows red, green and blue speckle. Default 25%. |
 | **Dye per cloud** | Same density from fewer, denser clouds | Harsher, more contrasty grain at the same size |
 | **Coarse fraction** | Share of density carried by the large clouds; **Use stock profile** keeps the stock's mix | Clumpier texture as it rises |
@@ -49,8 +51,8 @@ Take Portra 400 on 35 mm. Each control changes one physical property of the nega
 ## On-device rendering and AI
 
 - **GPU renderer.** A Rust engine runs WGSL compute shaders through `wgpu` on Vulkan. It draws a Poisson count of clouds at each site at twice the output resolution, blurs them with the cloud shapes, and averages the light the way a scanner would. The preview always renders the latest edit. At 100% it renders a full-resolution crop of the area on screen.
-- **Erase with local AI.** Tap an object and SAM 3.1 selects it, or paint the area with the brush. MI-GAN shows a fill at once, then a more precise model replaces it: LaMa, or OSOR when installed. Fills get noise measured from the surrounding photo, so they don't read as smooth patches. On Snapdragon 8 Elite Gen 5 (SM8850), the precompiled SAM 3.1 encoder runs on the Hexagon NPU. OSOR is an optional removal model, a one-time 4.3 GiB download, that also runs on the NPU.
-- **Private by default.** Photos never leave the phone. The original file is never changed. Exports go to `Pictures/Grainlegit` as full-resolution sRGB JPEGs.
+- **Erase with local AI.** Tap an object and SAM 3.1 selects it, or paint the area with the brush. MI-GAN shows a fill at once, then a more precise model replaces it: LaMa, or OSOR when installed. The model fills at 512 px, so precise fills then copy full-resolution texture from matching parts of the surroundings and top up grain measured beside the removal. The grain follows how strength changes with brightness around the hole. On a reopened Grainlegit export, Erase redraws the export's own grain over the fill from the settings saved in the file. On Snapdragon 8 Elite Gen 5 (SM8850), the precompiled SAM 3.1 encoder runs on the Hexagon NPU. OSOR is an optional removal model, a one-time 4.3 GiB download, that also runs on the NPU.
+- **Private by default.** Photos never leave the phone. The original file is never changed. Exports go to `Pictures/Grainlegit` as full-resolution sRGB JPEGs, with the grain settings recorded in XMP.
 
 ### Android editor
 
@@ -117,6 +119,21 @@ uv run --python 3.14 reference/filmgrain.py /path/to/photo.jpg --backend cpu -o 
 ```
 
 The tests use synthetic inputs. On Apple Silicon they also exercise Metal. To render a reference using Metal, pass `--backend metal` to the reference CLI. Pass `--print-medium paper` to render an optical print. Keep private test photos and local renders under `local/` or outside this repository.
+
+## Future ideas
+
+Ideas for matching grain and texture in Erase fills that we have not built yet. An offline test fitted the app's dye-cloud grain model to scans with CMA-ES. On colour scans it did not beat the current measured top-up, so the app only redraws its own model on reopened exports.
+
+| Idea | What it would add | Starting points |
+| --- | --- | --- |
+| Spectrum-shaped noise with a per-tone lookup table | One white-noise field filtered to the measured colour power spectrum, then mapped through quantiles of the real grain residual in each brightness bin. Gives clumps, tone-dependent strength and channel correlation, fitted in closed form. | [Heitz & Neyret 2018](https://dl.acm.org/doi/10.1145/3233304), [random-phase noise](http://www.ipol.im/pub/art/2011/ggm_rpn/index.html), [PGNM report](https://arxiv.org/abs/2610.39868) |
+| AV1-style grain estimation | Autoregressive grain filter and a piecewise-linear strength curve over brightness, estimated from denoised flat blocks. Cheap fallback. | [SVT-AV1 film grain](https://github.com/AOMediaCodec/SVT-AV1/blob/main/Docs/Appendix-Film-Grain-Synthesis.md), [Norkin & Birkbeck 2018](https://norkin.org/pdf/DCC_2018_AV1_film_grain.pdf) |
+| Closed-form Boolean grain estimation | Cloud size and blur estimated from a scan's residual autocorrelation and variance per tone, as a starting point for the search. | [Zhang et al. 2023](https://dl.acm.org/doi/10.1145/3592127) |
+| Neural grain | A small network that predicts grain parameters from a patch (to seed the search), or synthesises grain directly. Needs training data from real scans and licence checks. | [FGA-NN](https://arxiv.org/abs/2506.14350), [Style-FG](https://dl.acm.org/doi/10.1145/3587819.3590992), [Neural Film Grain Rendering](https://github.com/Gwilherm-LESNE/Neural_Film_Grain_Rendering) |
+| Oriented and periodic texture | Fabric, weaves and other directional or repeating structure that is finer than the model fill: oriented spectra (Gabor noise by example, steerable pyramid statistics) and periodic plus random decomposition, with patch copying kept for larger elements. | [Gabor noise by example](https://graphics.cs.kuleuven.be/publications/GLLD12GNBE), [Portilla–Simoncelli](https://docs.plenoptic.org/), [Moisan 2011](https://doi.org/10.1007/s10851-010-0227-1) |
+| Distribution losses for the fit | Sliced-Wasserstein distance on band responses as the search objective, so the fit matches whole distributions rather than standard deviations. | [Heitz et al. 2021](https://openaccess.thecvf.com/content/CVPR2021/html/Heitz_A_Sliced_Wasserstein_Loss_for_Neural_Texture_Synthesis_CVPR_2021_paper.html) |
+
+Gaussian splatting fits one image and would reproduce the surroundings rather than make new grain, so it is not on the list.
 
 ## Provenance and license
 

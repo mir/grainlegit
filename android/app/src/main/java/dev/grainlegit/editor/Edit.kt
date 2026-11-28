@@ -26,6 +26,9 @@ internal enum class Tool(
     // 0.1–15.85× in tenth-decade stops keeps 1× on a stop and leaves room for Auto on small photos.
     GrainSize("Grain size", 0.1f, 15.85f, 1f, 22, "×", logarithmic = true),
     GrainColour("Grain colour", 0f, 1f, 0.25f, 100),
+    GrainStrength("Grain strength", 0f, 2f, 1f, 40, "×"),
+    // Negative favours shadows, positive highlights; ±1 doubles the grain at that end.
+    GrainTone("Grain tone", -1f, 1f, steps = 40),
     GrainLoad("Dye per cloud", 0.1f, 8f, 1f, 158, "×"),
     CoarseFraction("Coarse fraction", 0f, 1f, 0.24f, 100),
     RedCloudSize("Red cloud size", 0.25f, 4f, 1f, 14, "×", logarithmic = true),
@@ -50,6 +53,11 @@ internal enum class Tool(
     fun display(value: Float): String = when {
         logarithmic -> "${"%.2f".format(value)}$unit"
         this == Development -> "%.1f".format(value)
+        this == GrainTone -> when {
+            value < -0.005f -> "Shadows ${(-value * 100).roundToInt()}%"
+            value > 0.005f -> "Highlights ${(value * 100).roundToInt()}%"
+            else -> "Even"
+        }
         unit.isNotEmpty() -> "${"%.1f".format(value)}$unit"
         else -> "${(value * 100).roundToInt()}%"
     }
@@ -98,6 +106,8 @@ internal data class Edit(
             .put("grain", get(Tool.Grain).toDouble())
             .put("grain_size", get(Tool.GrainSize).toDouble())
             .put("grain_colour", get(Tool.GrainColour).toDouble())
+            .put("grain_strength", get(Tool.GrainStrength).toDouble())
+            .put("grain_tone", get(Tool.GrainTone).toDouble())
             .put("grain_load", get(Tool.GrainLoad).toDouble())
             .put("layer_size", vector(Tool.RedCloudSize, Tool.GreenCloudSize, Tool.BlueCloudSize))
             .put("development", get(Tool.Development).toDouble())

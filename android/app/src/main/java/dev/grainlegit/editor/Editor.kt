@@ -289,7 +289,7 @@ internal fun Editor() {
 
     // Remove removal patches that no saved edit uses any more.
     LaunchedEffect(Unit) {
-        val keep = (recents.flatMap { it.edit.retouches } + edit.retouches).map { it.patch }.toSet()
+        val keep = (recents.flatMap { it.edit.retouches } + edit.retouches).flatMap { it.files }.toSet()
         withContext(Dispatchers.IO) { PatchStore.retainOnly(keep) }
     }
 
@@ -588,7 +588,9 @@ internal fun Editor() {
         state.operation = scope.launch {
             try {
                 val existing = state.draft
-                val remover = Remover(shown.photo, shown.layout, resolver)
+                val remover = Remover(shown.photo, shown.layout, resolver) { bitmap, outer, inner, edge, seed, edit ->
+                    renderer.exportTile(bitmap, outer, inner, edge, seed, edit)
+                }
                 val start = System.nanoTime()
                 val selection = state.snapshot() ?: return@launch
                 var quick: RemovalCandidate? = null

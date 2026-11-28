@@ -39,6 +39,23 @@ struct Optics {
     radius: u32,
     curve: [f32; 3],
     grain_colour: f32,
+    grain_strength: f32,
+    grain_tone: f32,
+    unused: [u32; 2],
+}
+
+impl Optics {
+    const NEUTRAL: Self = Self {
+        axis: 0,
+        quantized: 0,
+        print_scan: 0,
+        radius: 0,
+        curve: [0.0; 3],
+        grain_colour: 0.0,
+        grain_strength: 1.0,
+        grain_tone: 0.0,
+        unused: [0; 2],
+    };
 }
 
 pub struct Image {
@@ -183,6 +200,8 @@ struct NegativeKey {
     adjust: Adjust,
     seed: u64,
     grain_colour: f64,
+    grain_strength: f64,
+    grain_tone: f64,
 }
 
 pub struct Gpu {
@@ -386,6 +405,8 @@ impl Gpu {
             adjust: edit.adjust,
             seed,
             grain_colour: film.grain_colour,
+            grain_strength: film.grain_strength,
+            grain_tone: film.grain_tone,
         };
         let cached_negative = image
             .negative
@@ -431,7 +452,8 @@ impl Gpu {
         } else {
             let printing = film.print_medium != 0;
             let scan_optics = film.scan_blur > 0.0 || film.scan_aperture > 1.0;
-            let negative_balance = film.grain_colour < 1.0 && film.grain > 1e-6;
+            let negative_balance = film.grain > 1e-6
+                && (film.grain_colour < 1.0 || film.grain_strength != 1.0 || film.grain_tone != 0.0);
             let negative = if let Some(view) = cached_negative {
                 view
             } else {
@@ -493,6 +515,7 @@ impl Gpu {
                 radius: 0,
                 curve: emulsion::scan_curve(),
                 grain_colour: 0.0,
+                ..Optics::NEUTRAL
             });
             self.read_scan.run(
                 self,
@@ -627,8 +650,11 @@ impl Gpu {
             quantized: 0,
             print_scan: 0,
             radius: 0,
-            curve: [0.0; 3],
+            curve: emulsion::scan_curve(),
             grain_colour: film.grain_colour as f32,
+            grain_strength: if print { 1.0 } else { film.grain_strength as f32 },
+            grain_tone: if print { 0.0 } else { film.grain_tone as f32 },
+            unused: [0; 2],
         });
         self.balance.run(
             self,
@@ -747,6 +773,7 @@ impl Gpu {
                 radius: weights.len() as u32 / 2,
                 curve: [0.0; 3],
                 grain_colour: 0.0,
+                ..Optics::NEUTRAL
             });
             self.blur.run(
                 self,

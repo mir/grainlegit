@@ -453,3 +453,58 @@ fn write_measurement_renders() {
         }
     });
 }
+
+#[test]
+fn grain_strength_and_tone_scale_grain_and_keep_the_mean() {
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..Default::default()
+        });
+        let adapter = instance.request_adapter(&Default::default()).await.unwrap();
+        let gpu = Gpu::new(&adapter).await.unwrap();
+        let [width, height] = [512, 128];
+        // Left half dark grey, right half light grey.
+        let source: Vec<u8> = (0..height)
+            .flat_map(|_| (0..width).flat_map(|x| {
+                let v = if x < width / 2 { 60 } else { 200 };
+                [v, v, v, 255]
+            }))
+            .collect();
+        let mut image = gpu.upload([width, height], [0, 0], width * 4, &source).unwrap();
+        let mut stats = |strength: f64, tone: f64| {
+            let edit = Edit {
+                film: grainlegit::Settings {
+                    grain_colour: 0.25,
+                    grain_size: 4.0,
+                    grain_strength: strength,
+                    grain_tone: tone,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let rgb = gpu.read_rgb(&mut image, &edit, 6000, SEED, [0, 0, width, height]).unwrap();
+            let half = |range: std::ops::Range<u32>| {
+                let values: Vec<f64> = (8..height - 8)
+                    .flat_map(|y| range.clone().map(move |x| (y * width + x) as usize * 3 + 1))
+                    .map(|i| f64::from(rgb[i]))
+                    .collect();
+                let mean = values.iter().sum::<f64>() / values.len() as f64;
+                let sd = (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64).sqrt();
+                [mean, sd]
+            };
+            [half(8..width / 2 - 8), half(width / 2 + 8..width - 8)]
+        };
+        let [dark, light] = stats(1.0, 0.0);
+        let [weak_dark, weak_light] = stats(0.5, 0.0);
+        let [tone_dark, tone_light] = stats(1.0, 1.0);
+        eprintln!("base {dark:?} {light:?} half {weak_dark:?} {weak_light:?} highlights {tone_dark:?} {tone_light:?}");
+        for (a, b) in [(dark, weak_dark), (light, weak_light), (dark, tone_dark), (light, tone_light)] {
+            assert!((a[0] - b[0]).abs() < 1.5, "mean moved: {a:?} vs {b:?}");
+        }
+        assert!((weak_dark[1] / dark[1] - 0.5).abs() < 0.1);
+        assert!((weak_light[1] / light[1] - 0.5).abs() < 0.1);
+        // Towards highlights: the light half gains grain relative to the dark half.
+        assert!(tone_light[1] / light[1] > 1.2 * tone_dark[1] / dark[1]);
+    });
+}

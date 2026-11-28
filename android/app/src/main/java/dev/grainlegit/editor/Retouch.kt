@@ -38,19 +38,33 @@ internal data class Retouch(
     val width: Int,
     val height: Int,
     val model: String,
-    /** Noise to add over the patch when drawn, or null for patches saved before noise matching. */
+    /** White noise from 0.9, drawn only for patches saved before [grain] existed. */
     val noise: PatchNoise? = null,
+    /** Full-resolution detail copied from the surroundings: an offset-128 RGB image over [bounds]. */
+    val detail: String? = null,
+    /** Grain top-up per grain size, synthesised when the patch is drawn. */
+    val grain: PatchGrain? = null,
+    val useDetail: Boolean = true,
+    val useGrain: Boolean = true,
 ) {
     val bounds get() = Rect(left, top, left + width, top + height)
+    val files get() = listOfNotNull(patch, detail)
 
     fun encode(): JSONObject = JSONObject().put("patch", patch).put("left", left).put("top", top)
         .put("width", width).put("height", height).put("model", model)
-        .also { json -> noise?.let { json.put("noise", it.encode()) } }
+        .put("useDetail", useDetail).put("useGrain", useGrain)
+        .also { json ->
+            noise?.let { json.put("noise", it.encode()) }
+            detail?.let { json.put("detail", it) }
+            grain?.let { json.put("grain", it.encode()) }
+        }
 
     companion object {
         fun decode(o: JSONObject) = Retouch(
             o.getString("patch"), o.getInt("left"), o.getInt("top"), o.getInt("width"), o.getInt("height"),
             o.optString("model"), PatchNoise.decode(o.optJSONArray("noise")),
+            o.optString("detail").takeIf { it.isNotEmpty() }, PatchGrain.decode(o.optJSONArray("grain")),
+            o.optBoolean("useDetail", true), o.optBoolean("useGrain", true),
         )
 
         fun decodeAll(array: JSONArray?): List<Retouch> =
@@ -59,6 +73,8 @@ internal data class Retouch(
 }
 
 internal fun List<Retouch>.encode() = JSONArray().also { array -> forEach { array.put(it.encode()) } }
+
+private fun detailWidth(name: String) = PatchStore.load(name).width
 
 /** Content-addressed patch files in app storage, with a small decoded cache. */
 internal object PatchStore {
@@ -122,25 +138,49 @@ internal fun applyRetouches(target: Bitmap, region: Rect, retouches: List<Retouc
             (retouch.left + retouch.width - region.left) * sx, (retouch.top + retouch.height - region.top) * sy,
         )
         val noise = retouch.noise?.takeIf { it.visible }
-        if (noise == null) {
+        val grain = retouch.grain?.takeIf { retouch.useGrain }
+        // Detail finer than this bitmap's pixels would only alias, so previews skip it below half scale.
+        val detailName = retouch.detail?.takeIf { retouch.useDetail && sx * retouch.width >= 0.5f * detailWidth(it) }
+        if (noise == null && grain == null && detailName == null) {
             canvas.drawBitmap(patch, null, destination, paint)
             continue
         }
-        // Resample the patch onto this bitmap's pixel grid, then add noise keyed to source pixels.
+        // Resample the patch onto this bitmap's pixel grid, then add detail and noise keyed to source pixels.
         val area = Rect(floor(destination.left).toInt(), floor(destination.top).toInt(),
             ceil(destination.right).toInt(), ceil(destination.bottom).toInt())
         if (!area.intersect(0, 0, result.width, result.height)) continue
         val layer = Bitmap.createBitmap(area.width(), area.height(), Bitmap.Config.ARGB_8888)
         try {
-            Canvas(layer).apply {
-                translate(-area.left.toFloat(), -area.top.toFloat())
-                drawBitmap(patch, null, destination, paint)
-            }
             val pixels = IntArray(area.width() * area.height())
-            layer.getPixels(pixels, 0, area.width(), 0, 0, area.width(), area.height())
-            addNoise(pixels, area.width(), area.height(), noise, retouch.patch.hashCode(),
-                region.left + area.left / sx.toDouble(), region.top + area.top / sy.toDouble(),
-                1.0 / sx, 1.0 / sy, min(1f, sqrt(sx * sy)))
+            fun rasterise(bitmap: Bitmap, into: IntArray) {
+                layer.eraseColor(0)
+                Canvas(layer).apply {
+                    translate(-area.left.toFloat(), -area.top.toFloat())
+                    drawBitmap(bitmap, null, destination, paint)
+                }
+                layer.getPixels(into, 0, area.width(), 0, 0, area.width(), area.height())
+            }
+            // The fill alone is smooth, so its tone sets grain strength without the detail's noise.
+            val fillOnly: IntArray
+            if (detailName != null) {
+                val detail = IntArray(pixels.size)
+                rasterise(PatchStore.load(detailName), detail)
+                rasterise(patch, pixels)
+                fillOnly = pixels.copyOf()
+                addDetail(pixels, detail)
+            } else {
+                rasterise(patch, pixels)
+                fillOnly = pixels
+            }
+            val originX = region.left + area.left / sx.toDouble()
+            val originY = region.top + area.top / sy.toDouble()
+            if (grain != null) {
+                addGrain(pixels, area.width(), area.height(), grain, detailName != null, retouch.patch.hashCode(),
+                    originX, originY, 1.0 / sx, 1.0 / sy, tones = fillOnly)
+            } else if (noise != null) {
+                addNoise(pixels, area.width(), area.height(), noise, retouch.patch.hashCode(),
+                    originX, originY, 1.0 / sx, 1.0 / sy, min(1f, sqrt(sx * sy)))
+            }
             layer.setPixels(pixels, 0, area.width(), 0, 0, area.width(), area.height())
             canvas.drawBitmap(layer, area.left.toFloat(), area.top.toFloat(), null)
         } finally {
@@ -305,7 +345,12 @@ internal class Remover(
     private val photo: Photo,
     private val layout: GeometryLayout,
     private val resolver: android.content.ContentResolver,
+    /** Renders a tile through the film pipeline, as [Renderer.exportTile]; draws grain on reopened exports. */
+    private val renderTile: (suspend (Bitmap, Rect, Rect, Int, Long, String) -> ByteArray)? = null,
 ) {
+    /** The grain this photo was exported with, when it is a Grainlegit export. */
+    private val baked: BakedGrain? by lazy { if (renderTile == null) null else readBakedGrain(resolver, photo.uri) }
+
     /**
      * Decode the context square around [selection] once so several models can fill it. [existing]
      * removals are applied to the context first so successive removals build on each other.
@@ -317,27 +362,23 @@ internal class Remover(
         // Source pixels for the context square, decoded at the nearest power-of-two reduction.
         var sample = 1
         while (context.width() / (sample * 2) >= target && context.height() / (sample * 2) >= target) sample *= 2
-        return photo.openRegions(resolver).use { regions ->
-            val decoded = regions.decode(context, sample)
-            val noise = try {
-                val tiles = noiseTiles(sourceSelected).map { regions.decode(it, 1) }
-                try { measureNoise(tiles) } finally { tiles.forEach(Bitmap::recycle) }
-            } catch (error: Exception) {
-                android.util.Log.w("Grainlegit", "Could not measure noise beside the selection", error)
-                null
-            }
-            android.util.Log.i("Grainlegit", "Noise beside the selection: $noise")
-            Prepared(selection, context, applyRetouches(decoded, context, existing), noise)
-        }
+        val decoded = photo.openRegions(resolver).use { it.decode(context, sample) }
+        return Prepared(selection, context, applyRetouches(decoded, context, existing), existing)
     }
 
     inner class Prepared internal constructor(
         private val selection: RemovalMask,
         private val context: Rect,
         private val image: Bitmap,
-        val noise: PatchNoise?,
+        private val existing: List<Retouch>,
     ) : Closeable {
-        fun inpaint(model: Inpainter): RemovalCandidate {
+        private var grainResolution: GrainResolution? = null
+
+        /**
+         * Fill the selection with [model]. With [refine], also copy full-resolution detail from the
+         * surroundings and measure the grain to add; this decodes the context at full resolution.
+         */
+        fun inpaint(model: Inpainter, refine: Boolean = false): RemovalCandidate {
             val size = model.size
             val crop = Bitmap.createScaledBitmap(image, size, size, true)
             val pixels = try {
@@ -347,26 +388,35 @@ internal class Remover(
             }
             val hole = rasterizeHole(selection, context, size)
             val inpainted = model.inpaint(pixels, hole)
-            val retouch = buildPatch(inpainted, hole, context, size, model.id, noise)
+            val grain = if (refine && size == MODEL_SIDE) grainResolution() else null
+            val retouch = buildPatch(inpainted, hole, context, size, model.id, grain)
             return RemovalCandidate(retouch, model.label, model.lastMs)
+        }
+
+        /** The context square at up to [MAX_GRAIN_SIDE] px, with earlier removals applied. */
+        private fun grainResolution(): GrainResolution = grainResolution ?: run {
+            val longest = max(context.width(), context.height())
+            var sample = 1
+            while (longest > sample * MAX_GRAIN_SIDE) sample *= 2
+            val decoded = photo.openRegions(resolver).use { it.decode(context, sample) }
+            val withRetouches = applyRetouches(decoded, context, existing)
+            val n = (min(withRetouches.width, withRetouches.height) / MODEL_SIDE).coerceIn(1, MAX_GRAIN_SIDE / MODEL_SIDE)
+            val side = MODEL_SIDE * n
+            val scaled = Bitmap.createScaledBitmap(withRetouches, side, side, true)
+            if (scaled !== withRetouches) withRetouches.recycle()
+            val pixels = IntArray(side * side).also { scaled.getPixels(it, 0, side, 0, 0, side, side) }
+            scaled.recycle()
+            GrainResolution(pixels, n).also { grainResolution = it }
         }
 
         override fun close() = image.recycle()
     }
 
-    /** Full-resolution tiles left, right, above and below the selection, clear of its soft edge. */
-    private fun noiseTiles(selected: Rect): List<Rect> {
-        val gap = max(8, max(selected.width(), selected.height()) / 10)
-        val half = NOISE_TILE / 2
-        val cx = selected.centerX()
-        val cy = selected.centerY()
-        return listOf(
-            Rect(selected.left - gap - NOISE_TILE, cy - half, selected.left - gap, cy + half),
-            Rect(selected.right + gap, cy - half, selected.right + gap + NOISE_TILE, cy + half),
-            Rect(cx - half, selected.top - gap - NOISE_TILE, cx + half, selected.top - gap),
-            Rect(cx - half, selected.bottom + gap, cx + half, selected.bottom + gap + NOISE_TILE),
-        ).filter { it.intersect(0, 0, photo.size.width, photo.size.height) && it.width() >= 32 && it.height() >= 32 }
-    }
+    private fun bakedDetail(
+        film: BakedGrain, n: Int, fill: IntArray, context: Rect, unit: Float,
+        left: Int, top: Int, right: Int, bottom: Int, seed: Int,
+    ): DetailLayer = bakedDetailLayer(film, checkNotNull(renderTile), max(photo.size.width, photo.size.height),
+        n, fill, context, unit, left, top, right, bottom, seed)
 
     /** Selection → model-space hole mask, dilated so the fill covers the object's soft edge. */
     private fun rasterizeHole(selection: RemovalMask, context: Rect, size: Int): BooleanArray {
@@ -387,7 +437,7 @@ internal class Remover(
     }
 
     private fun buildPatch(
-        inpainted: IntArray, hole: BooleanArray, context: Rect, size: Int, model: String, noise: PatchNoise?,
+        inpainted: IntArray, hole: BooleanArray, context: Rect, size: Int, model: String, grain: GrainResolution?,
     ): Retouch {
         val feather = max(2, (size * 0.01f).roundToInt())
         val alpha = featherMask(hole, size, feather)
@@ -421,19 +471,98 @@ internal class Remover(
         val patch = Bitmap.createScaledBitmap(modelPatch, patchWidth, patchHeight, true)
         if (patch !== modelPatch) modelPatch.recycle()
         val name = PatchStore.save(patch)
-        return Retouch(name, sourceRect.left, sourceRect.top, sourceRect.width(), sourceRect.height(), model, noise)
+        if (grain == null) return Retouch(name, sourceRect.left, sourceRect.top, sourceRect.width(), sourceRect.height(), model)
+
+        val started = android.os.SystemClock.elapsedRealtime()
+        val seed = name.hashCode()
+        val unitBaked = (context.width() + context.height()) / (2f * size * grain.n)
+        baked?.let { film ->
+            val layer = try {
+                bakedDetail(film, grain.n, inpainted, context, unitBaked, left, top, right, bottom, seed)
+            } catch (error: Exception) {
+                android.util.Log.w("Grainlegit", "Could not draw the export's grain, matching instead", error)
+                null
+            }
+            if (layer != null) {
+                val detailName = PatchStore.save(Bitmap.createBitmap(layer.pixels, layer.width, layer.height, Bitmap.Config.ARGB_8888))
+                android.util.Log.i("Grainlegit", "Drew the export's grain at ${size * grain.n} px from ${context.width()}×${context.height()} " +
+                    "in ${android.os.SystemClock.elapsedRealtime() - started} ms")
+                return Retouch(name, sourceRect.left, sourceRect.top, sourceRect.width(), sourceRect.height(), model, detail = detailName)
+            }
+        }
+        val detail = if (grain.n < 2) null else transferDetail(grain, inpainted, hole, alpha, left, top, right, bottom, seed)
+        val transferred = android.os.SystemClock.elapsedRealtime()
+        val unit = (context.width() + context.height()) / (2f * size * grain.n)
+        val grainTopUp = measureGrain(grain, inpainted, hole, alpha, detail, left, top, unit)
+        // PatchStore keeps the saved bitmap in its cache, so it must not be recycled here.
+        val detailName = detail?.let { PatchStore.save(Bitmap.createBitmap(it.pixels, it.width, it.height, Bitmap.Config.ARGB_8888)) }
+        android.util.Log.i("Grainlegit", "Refined at ${size * grain.n} px from ${context.width()}×${context.height()}: detail ${transferred - started} ms, " +
+            "grain ${android.os.SystemClock.elapsedRealtime() - transferred} ms, ${grainTopUp?.detailed}, tone ${grainTopUp?.toneMean}/${grainTopUp?.toneSlope}")
+        return Retouch(name, sourceRect.left, sourceRect.top, sourceRect.width(), sourceRect.height(), model,
+            detail = detailName, grain = grainTopUp)
+    }
+}
+
+/**
+ * Grain for a fill on a Grainlegit export: the fill at grain resolution, rendered through the
+ * export's film with and without grain, as an offset-128 layer of the difference. Rendering the clean
+ * film too cancels the film's tone mapping, which the export already has.
+ */
+private fun bakedDetailLayer(
+    film: BakedGrain, render: suspend (Bitmap, Rect, Rect, Int, Long, String) -> ByteArray, photoEdge: Int,
+    n: Int, fill: IntArray, context: Rect, unit: Float, left: Int, top: Int, right: Int, bottom: Int, seed: Int,
+): DetailLayer {
+    val w = (right - left + 1) * n
+    val h = (bottom - top + 1) * n
+    val edge = max(1, (photoEdge / unit).roundToInt())
+    val grainy = film.grainy()
+    val pad = NativeRenderer.padding(grainy, edge)
+    val outerWidth = w + 2 * pad
+    val outerHeight = h + 2 * pad
+    val base = fillAtGrainResolution(fill, n, left * n - pad, top * n - pad, outerWidth, outerHeight)
+    // The renderer recycles each tile it draws, so every render gets its own bitmap.
+    fun tile() = Bitmap.createBitmap(outerWidth, outerHeight, Bitmap.Config.ARGB_8888).apply {
+        setPixels(base, 0, outerWidth, 0, 0, outerWidth, outerHeight)
+    }
+    run {
+        // Grain is keyed to position, so place the tile where it sits in the photo at grain resolution.
+        val ox = max(0, (context.left / unit).roundToInt() + left * n - pad)
+        val oy = max(0, (context.top / unit).roundToInt() + top * n - pad)
+        val outer = Rect(ox, oy, ox + outerWidth, oy + outerHeight)
+        val inner = Rect(ox + pad, oy + pad, ox + pad + w, oy + pad + h)
+        val tileSeed = film.seed xor (seed.toLong() * 0x9e3779b97f4a7c15uL.toLong())
+        val (withGrain, without) = kotlinx.coroutines.runBlocking {
+            render(tile(), outer, inner, edge, tileSeed, grainy) to render(tile(), outer, inner, edge, tileSeed, film.clean())
+        }
+        val residual = Array(3) { FloatArray(w * h) }
+        val pixels = IntArray(w * h) { i ->
+            var argb = 0xFF000000.toInt()
+            for (c in 0 until 3) {
+                val d = (withGrain[i * 3 + c].toInt() and 0xFF) - (without[i * 3 + c].toInt() and 0xFF)
+                residual[c][i] = d.toFloat()
+                argb = argb or ((d + 128).coerceIn(0, 255) shl (16 - 8 * c))
+            }
+            argb
+        }
+        return DetailLayer(pixels, w, h, residual)
     }
 }
 
 /** Every removal model runs at this square size. */
 internal const val MODEL_SIDE = 512
-private const val NOISE_TILE = 160
+/** Longest side of the context square for detail transfer, in pixels. */
+private const val MAX_GRAIN_SIDE = 3072
 
 /** A square around [selected] with room for context, kept inside the photo where possible. */
 internal fun contextSquare(selected: Rect, photo: androidx.compose.ui.unit.IntSize, modelSize: Int): Rect {
     val span = max(selected.width(), selected.height())
     var side = max((span * 2.2f).roundToInt(), min(modelSize, max(photo.width, photo.height)))
     side = min(side, max(photo.width, photo.height))
+    // Prefer a side that decodes to exactly MODEL_SIDE·n pixels, so detail and grain are measured
+    // and drawn without resampling, which would soften the finest grain.
+    // Grow by up to a third, or shrink by up to a tenth when growing would not fit the photo.
+    val fits = min(photo.width, photo.height)
+    grainSides(side).firstOrNull { it in side * 9 / 10..side * 4 / 3 && it <= fits }?.let { side = it }
     fun place(center: Int, extent: Int): Pair<Int, Int> {
         val length = min(side, extent)
         val start = (center - length / 2).coerceIn(0, extent - length)
@@ -442,6 +571,21 @@ internal fun contextSquare(selected: Rect, photo: androidx.compose.ui.unit.IntSi
     val (left, right) = place(selected.centerX(), photo.width)
     val (top, bottom) = place(selected.centerY(), photo.height)
     return Rect(left, top, right, bottom)
+}
+
+/**
+ * Sides near [side] that a power-of-two decode reduces to exactly MODEL_SIDE·n pixels with
+ * 2 ≤ n ≤ MAX_GRAIN_SIDE / MODEL_SIDE: the next one up, then the next one down. Empty at or below
+ * one model side.
+ */
+internal fun grainSides(side: Int): List<Int> {
+    if (side <= MODEL_SIDE) return emptyList()
+    var sample = 1
+    while (side > sample * MAX_GRAIN_SIDE) sample *= 2
+    val cell = MODEL_SIDE * sample
+    val up = max(2, (side + cell - 1) / cell) * cell
+    val down = side / cell * cell
+    return listOfNotNull(up, down.takeIf { it < up && it >= 2 * cell })
 }
 
 private fun dilate(mask: BooleanArray, size: Int, radius: Int): BooleanArray {
