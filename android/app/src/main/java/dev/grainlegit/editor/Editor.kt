@@ -491,12 +491,15 @@ internal fun Editor() {
     val fullResolution = zoomEnabled && view?.scale == 1f && zoom != null
     val previewEdit = edit.copy(curves = curveDraft ?: edit.curves, balance = sample?.gains ?: edit.balance)
     val nativeEdit = remember(previewEdit) { previewEdit.nativeSettings() }
+    // Read here so a press recomposes this scope: reads inside SideEffect are not tracked, and the
+    // compare button's own read only recomposes the toolbar.
+    val showOriginal = comparing
     SideEffect {
         val previewCamera = if (warp == null) view?.pixelAligned(viewport) else view
         // The preview surface runs under the controls, so its centre sits half their height below the viewport's.
         val center = previewCamera?.let { it.center + Offset(0f, controlsInset / 2f / it.scale) } ?: Offset.Zero
         renderer.request(Frame(active?.generation ?: 0L, center,
-            previewCamera?.scale ?: 1f, nativeEdit, comparing, fullResolution, warp))
+            previewCamera?.scale ?: 1f, nativeEdit, showOriginal, fullResolution, warp))
     }
 
     val visible = if (fullResolution && viewport.width > 0 && viewport.height > 0) {
