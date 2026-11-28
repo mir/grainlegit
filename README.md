@@ -12,7 +12,7 @@ Grainlegit doesn't lay a grain texture over your photo. It exposes the photo ont
   <img src="docs/readme/screen-film.webp" width="24%" alt="Grainlegit's Film tab: a railway landscape on Kodak Gold 200 with floating glass controls">
   <img src="docs/readme/screen-stocks.webp" width="24%" alt="The Film stock sheet showing live previews of Portra 400 and Gold 200 over the photo">
   <img src="docs/readme/screen-lens.webp" width="24%" alt="The Lens tab at f/1.4 with vignette, glow and softness">
-  <img src="docs/readme/screen-erase.webp" width="24%" alt="Erase with the train selected by a single tap">
+  <img src="docs/readme/screen-erase.webp" width="24%" alt="Erase after OSOR removed the train and its shadow">
   <br>
   <sub>Film, stock picker, Lens and Erase in Grainlegit 0.15 on a Xiaomi 17 Ultra.</sub>
 </p>
@@ -36,7 +36,7 @@ Grainlegit doesn't lay a grain texture over your photo. It exposes the photo ont
 Open **Lens** and drag **Aperture** from f/5.6 toward f/1.4. Corners fall off and soften, the centre warms, and bright areas start to glow in the colour of their light. Fine-tune **Vignette**, **Glow**, **Haze**, **Softness** and **Edge warmth**, or turn up **Ghosts** for flare opposite the brightest highlight. The lens works before the film, so grain stays crisp even where the lens softens the image.
 
 <p align="center">
-  <img src="docs/readme/lens-f56.webp" width="32%" alt="Railway landscape in Grainlegit's Lens tab at f/5.6 with the lens effect off">
+  <img src="docs/readme/lens-f56.webp" width="32%" alt="Railway landscape in Grainlegit's Lens tab at f/5.6 with no lens falloff">
   <img src="docs/readme/lens-f28.webp" width="32%" alt="The same landscape at f/2.8 with gentle corner falloff">
   <img src="docs/readme/lens-f14.webp" width="32%" alt="The same landscape at f/1.4 with stronger corner falloff and a warmer centre">
   <br>
@@ -46,6 +46,13 @@ Open **Lens** and drag **Aperture** from f/5.6 toward f/1.4. Corners fall off an
 ## Erase anything with on-device AI
 
 Tap an object and SAM 3.1 selects it on the phone's NPU, or paint over it with the brush. A quick fill appears straight away, and then a more precise model refines it. Grainlegit copies full-resolution texture from the surroundings and matches the photo's grain, so the fill doesn't look smeared. For the best results, download the optional OSOR model (4.3 GiB). It also runs on the NPU.
+
+<p align="center">
+  <img src="docs/readme/erase-select.webp" width="32%" alt="The train selected with a single tap, highlighted in Erase">
+  <img src="docs/readme/screen-erase.webp" width="32%" alt="The same landscape after OSOR removed the train and its shadow">
+  <br>
+  <sub>One tap selects the train. OSOR removes it, and a brush stroke over the shadow cleans up the track.</sub>
+</p>
 
 ## Everything else you need
 
