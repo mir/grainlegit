@@ -147,7 +147,8 @@ internal class EraseEngine private constructor(context: Context) {
     }
 
     private fun selectionModel(): ImageSegmenter = segmenter ?: run {
-        val sam = if (Sam31.available(application)) {
+        val unavailable = Sam31.unavailableReason(application)
+        val sam = if (unavailable == null) {
             try {
                 Sam31.open(application)
             } catch (error: Exception) {
@@ -157,7 +158,10 @@ internal class EraseEngine private constructor(context: Context) {
                 Log.w("Grainlegit", "SAM 3.1 runtime unavailable, using EdgeTAM", error)
                 null
             }
-        } else null
+        } else {
+            Log.i("Grainlegit", "SAM 3.1 unavailable ($unavailable), using EdgeTAM")
+            null
+        }
         (sam ?: Segmenter(selectionMl)).also { segmenter = it }
     }
 

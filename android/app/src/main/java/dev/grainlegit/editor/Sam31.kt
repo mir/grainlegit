@@ -91,9 +91,12 @@ internal class Sam31 private constructor(
         private const val CONTEXT = "encoder-sm8850_qnn.bin"
         private const val DECODER = "click-decoder.onnx"
 
-        fun available(context: Context): Boolean =
-            Build.SOC_MODEL.equals("SM8850", ignoreCase = true) &&
-                context.assets.list(ASSETS).orEmpty().toSet().containsAll(listOf(ENCODER, CONTEXT, DECODER))
+        fun unavailableReason(context: Context): String? {
+            if (!Build.SOC_MODEL.equals("SM8850", ignoreCase = true)) return "unsupported SoC ${Build.SOC_MODEL}"
+            val bundled = context.assets.list(ASSETS).orEmpty().toSet()
+            val missing = listOf(ENCODER, CONTEXT, DECODER).filterNot { it in bundled }
+            return if (missing.isEmpty()) null else "APK is missing ${missing.joinToString()}"
+        }
 
         fun open(context: Context): Sam31 {
             val start = SystemClock.elapsedRealtimeNanos()
@@ -113,7 +116,7 @@ internal class Sam31 private constructor(
                     options.setIntraOpNumThreads(4)
                     runtime.createSession(File(modelDir, DECODER).absolutePath, options)
                 }
-                Log.i(TAG, "Loaded precompiled SAM 3.1 on NPU in ${elapsed(start)} ms")
+                Log.i(TAG, "Loaded SAM 3.1 (NPU encoder, CPU decoder) in ${elapsed(start)} ms")
                 return Sam31(runtime, encoder, decoder)
             } catch (error: Throwable) {
                 encoder.close()

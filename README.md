@@ -104,9 +104,11 @@ The first device target is the Xiaomi 17 Ultra. Enable USB debugging, connect th
 
 The app keeps the original intact and saves recent edits and their seeds locally. Tap the export arrow, then **Save copy**, to save a JPEG to `Pictures/Grainlegit`. The exporter decodes and renders padded tiles and stages RGB rows in the app cache before encoding. Allow approximately three bytes of temporary disk space per output pixel, plus space for the JPEG. Cancelled exports remove their temporary files and any unpublished MediaStore entry.
 
-### SM8850 release APK
+### SAM 3.1 on SM8850
 
 Use the [SAM 3.1 ONNX export](https://huggingface.co/smile-forge/sam3.1-onnx/tree/47874a1f1d996211f6cc11bc6201a36af87a3fd6). Place `image-encoder.onnx`, `image-encoder.onnx.data`, and `click-decoder.onnx` together in a local model directory. With the QAIRT 2.52 x86-64 Linux libraries on `LD_LIBRARY_PATH`, run `uv run scripts/compile-sam31.py MODEL_DIR` to generate the context under `MODEL_DIR/sm8850`.
+
+Debug builds bundle SAM 3.1 when the compiled files are under `local/ai-models/selection-study/sam3.1`. For another model directory, set `GRAINLEGIT_SAM31_MODEL_DIR` or pass `-Psam31ModelDir=/path/to/MODEL_DIR` directly to Gradle. `scripts/android install` and `scripts/android run` require these assets when targeting an SM8850 phone. On opening Erase, `scripts/android logs` reports the SAM 3.1 NPU encoder and CPU decoder or the reason it used EdgeTAM.
 
 Build the unsigned APK with `android/gradlew -p android :app:assembleRelease`. Run `scripts/package-android-sm8850 MODEL_DIR OUTPUT_APK` to add the precompiled model, align and sign the APK. The script uses `release.p12` and `release.pass` in `${XDG_CONFIG_HOME:-$HOME/.config}/grainlegit`. Override the paths with `GRAINLEGIT_RELEASE_KEYSTORE` and `GRAINLEGIT_RELEASE_PASSWORD_FILE`.
 

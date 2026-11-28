@@ -23,8 +23,8 @@ android {
     buildTypes.getByName("debug").applicationIdSuffix = ".dev"
 
     buildFeatures.compose = true
-    // LiteRT memory-maps models straight from the APK.
-    androidResources.noCompress += "tflite"
+    // LiteRT maps its models and SAM 3.1 opens its assets with AssetManager.openFd.
+    androidResources.noCompress += listOf("tflite", "onnx", "bin")
     // The Hexagon loader reads the NPU runtime from the extracted native library directory.
     packaging.jniLibs.useLegacyPackaging = true
     // Keep only the Snapdragon 8 Elite Gen 5 (Hexagon v81) NPU runtime from the QAIRT package.
@@ -97,10 +97,16 @@ abstract class CopyModels : DefaultTask() {
     @get:InputDirectory
     @get:Optional
     abstract val sm8850Models: DirectoryProperty
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NAME_ONLY)
+    abstract val sam31ModelFiles: ConfigurableFileCollection
     @get:OutputDirectory abstract val assets: DirectoryProperty
     @get:Inject abstract val files: FileSystemOperations
 
     @TaskAction fun copy() {
+        for (file in sam31ModelFiles) {
+            require(file.isFile && file.length() > 0) { "Missing SAM 3.1 model file: $file" }
+        }
         files.sync {
             from(models) { into("models") }
             sm8850Models.orNull?.let { directory ->
@@ -109,8 +115,13 @@ abstract class CopyModels : DefaultTask() {
                     into("models/sm8850")
                 }
             }
+            from(sam31ModelFiles) { into("models/sm8850/sam31") }
             into(assets)
         }
+    }
+
+    companion object {
+        val sam31Files = listOf("click-decoder.onnx", "sm8850/encoder-sm8850.onnx", "sm8850/encoder-sm8850_qnn.bin")
     }
 }
 
@@ -120,6 +131,15 @@ androidComponents.onVariants { variant ->
         models.from(repo.dir("local/ai-models/app"))
         if (providers.gradleProperty("sm8850Models").orNull.toBoolean()) {
             sm8850Models.set(repo.dir("local/ai-models/aot/sm8850"))
+        }
+        if (variant.buildType == "debug") {
+            val configured = providers.gradleProperty("sam31ModelDir")
+                .orElse(providers.environmentVariable("GRAINLEGIT_SAM31_MODEL_DIR")).orNull
+            val directory = repo.dir(configured ?: "local/ai-models/selection-study/sam3.1")
+            val files = CopyModels.sam31Files.map { directory.file(it).asFile }
+            if (configured != null || files.all { it.isFile && it.length() > 0 }) {
+                sam31ModelFiles.from(files)
+            }
         }
         assets.set(layout.buildDirectory.dir("generated/modelAssets/${variant.name}"))
     }

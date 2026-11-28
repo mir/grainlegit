@@ -27,6 +27,12 @@ case "${1:-build}" in
   build|install|run)
     "$repo/android/gradlew" -p "$repo/android" :app:assembleDebug
     if [[ "${1:-build}" != build ]]; then
+      soc=$("$adb" shell getprop ro.soc.model | tr -d '\r')
+      if [[ "$soc" == [Ss][Mm]8850 ]] &&
+         ! unzip -Z1 "$apk" assets/models/sm8850/sam31/encoder-sm8850_qnn.bin >/dev/null 2>&1; then
+        printf 'This SM8850 phone needs a debug APK with SAM 3.1. Set GRAINLEGIT_SAM31_MODEL_DIR to the compiled model directory and retry.\n' >&2
+        exit 1
+      fi
       "$adb" install -r "$apk"
     fi
     if [[ "${1:-build}" == run ]]; then
