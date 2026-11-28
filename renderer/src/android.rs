@@ -144,6 +144,7 @@ struct Engine {
     adapter: wgpu::Adapter,
     gpu: Gpu,
     photo: Option<Photo>,
+    export_lens: Option<crate::lens::LensLight>,
 }
 
 impl Engine {
@@ -207,6 +208,7 @@ impl Engine {
             adapter,
             gpu,
             photo: None,
+            export_lens: None,
         })
     }
 
@@ -407,6 +409,7 @@ pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_setSource(
                 seed: seed as u64,
                 fit,
                 detail: None,
+                lens_light: None,
             });
             Ok(())
         })
@@ -534,12 +537,15 @@ pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_padding(
     env: JNIEnv,
     _class: JClass,
     edit: JString,
-    edge: jint,
+    width: jint,
+    height: jint,
 ) -> jint {
     call(env, |env| {
         let edit = parse_edit(env, &edit)?;
-        let padding = crate::emulsion::padding(edge as u32, &edit.film)?;
-        Ok(padding as jint + i32::from(edit.adjust.tones[3] > 0.0))
+        if width <= 0 || height <= 0 {
+            return Err("Invalid photo size".into());
+        }
+        Ok(edit.padding([width as u32, height as u32])? as jint)
     })
 }
 
@@ -561,6 +567,50 @@ pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_autoGrainSize(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_prepareExportLens(
+    env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    bitmap: JObject,
+    edit: JString,
+) {
+    call(env, |env| {
+        let edit = parse_edit(env, &edit)?;
+        with_engine(handle, |engine| {
+            engine.export_lens = None;
+            if edit.lens.effects().needs_light() {
+                let source = LockedBitmap::new(env, &bitmap)?.upload(&engine.gpu, [0, 0])?;
+                let mut encoder = engine
+                    .gpu
+                    .device
+                    .create_command_encoder(&Default::default());
+                engine.export_lens = Some(engine.gpu.prepare_lens_light(
+                    &mut encoder,
+                    &source,
+                    &edit.adjust,
+                ));
+                engine.gpu.queue.submit([encoder.finish()]);
+            }
+            Ok(())
+        })
+    });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_clearExportLens(
+    env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    call(env, |_| {
+        with_engine(handle, |engine| {
+            engine.export_lens = None;
+            Ok(())
+        })
+    });
+}
+
+#[no_mangle]
 pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_exportTile(
     env: JNIEnv,
     _class: JClass,
@@ -572,7 +622,8 @@ pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_exportTile(
     top: jint,
     width: jint,
     height: jint,
-    edge: jint,
+    frame_width: jint,
+    frame_height: jint,
     seed: jlong,
     edit: JString,
 ) -> jni::sys::jbyteArray {
@@ -584,9 +635,10 @@ pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_exportTile(
             engine.gpu.read_rgb(
                 &mut image,
                 &edit,
-                edge as u32,
+                [frame_width as u32, frame_height as u32],
                 seed as u64,
                 [left as u32, top as u32, width as u32, height as u32],
+                engine.export_lens.as_ref(),
             )
         })?;
         env.byte_array_from_slice(&pixels)

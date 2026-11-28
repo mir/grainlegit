@@ -1,5 +1,6 @@
-use crate::edit::{Adjust, Edit};
+use crate::edit::{Adjust, Edit, LensEffects};
 use crate::emulsion::{self, Emulsion, PRINT_SEED_MASK};
+use crate::lens::{LensLight, LensPipeline};
 use bytemuck::{Pod, Zeroable};
 use grainlegit::Settings;
 use std::cell::RefCell;
@@ -9,7 +10,7 @@ use std::rc::Rc;
 use wgpu::util::DeviceExt;
 use wgpu::{BindingResource as Resource, TextureFormat, TextureUsages as Usage};
 
-const COLOR: TextureFormat = TextureFormat::Rgba8Unorm;
+pub(crate) const COLOR: TextureFormat = TextureFormat::Rgba8Unorm;
 const LIGHT: TextureFormat = TextureFormat::Rgba32Float;
 const SCRATCH_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -65,17 +66,17 @@ pub struct Image {
     pub source_view: wgpu::TextureView,
     pub output: wgpu::Texture,
     pub output_view: wgpu::TextureView,
-    rendered: Option<(Edit, u32, u64)>,
+    rendered: Option<(Edit, [u32; 2], u64)>,
     negative: Option<(NegativeKey, wgpu::TextureView)>,
 }
 
-struct Kernel {
+pub(crate) struct Kernel {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
 }
 
 impl Kernel {
-    fn new(
+    pub(crate) fn new(
         device: &wgpu::Device,
         module: &wgpu::ShaderModule,
         entry: &'static str,
@@ -110,7 +111,7 @@ impl Kernel {
         Self { layout, pipeline }
     }
 
-    fn run(
+    pub(crate) fn run(
         &self,
         gpu: &Gpu,
         encoder: &mut wgpu::CommandEncoder,
@@ -198,6 +199,8 @@ impl PlateKey {
 struct NegativeKey {
     plate: PlateKey,
     adjust: Adjust,
+    lens: LensEffects,
+    frame_size: [u32; 2],
     seed: u64,
     grain_colour: f64,
     grain_strength: f64,
@@ -213,6 +216,7 @@ pub struct Gpu {
     balance: Kernel,
     read_scan: Kernel,
     adjust: Kernel,
+    lens: LensPipeline,
     scratch: wgpu::Buffer,
     plates: RefCell<VecDeque<(PlateKey, Rc<Plate>)>>,
 }
@@ -288,6 +292,7 @@ impl Gpu {
                 (2, uniform(size_of::<Adjust>(), false)),
             ],
         );
+        let lens = LensPipeline::new(&device);
         let scratch = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("grain band scratch"),
             size: SCRATCH_BYTES,
@@ -306,12 +311,13 @@ impl Gpu {
             balance,
             read_scan,
             adjust,
+            lens,
             scratch,
             plates: RefCell::new(VecDeque::new()),
         })
     }
 
-    fn texture(
+    pub(crate) fn texture(
         &self,
         extent: wgpu::Extent3d,
         format: TextureFormat,
@@ -391,18 +397,26 @@ impl Gpu {
         encoder: &mut wgpu::CommandEncoder,
         image: &mut Image,
         edit: &Edit,
-        edge: u32,
+        frame_size: [u32; 2],
         seed: u64,
+        lens_light: Option<&LensLight>,
     ) -> Result<(), String> {
-        let render_key = (*edit, edge, seed);
+        let render_key = (*edit, frame_size, seed);
         if image.rendered == Some(render_key) {
             return Ok(());
         }
         let (extent, film) = (image.extent, &edit.film);
+        let edge = frame_size[0].max(frame_size[1]);
         emulsion::padding(edge, film)?;
+        let lens_effects = edit.lens.effects();
+        if lens_effects.needs_light() && lens_light.is_none() {
+            return Err("Missing full-frame lens light".into());
+        }
         let key = NegativeKey {
             plate: PlateKey::new(edge, film, false, false),
             adjust: edit.adjust,
+            lens: lens_effects,
+            frame_size,
             seed,
             grain_colour: film.grain_colour,
             grain_strength: film.grain_strength,
@@ -416,33 +430,31 @@ impl Gpu {
         if cached_negative.is_none() {
             image.negative = None;
         }
-        let graded = if cached_negative.is_none() && edit.adjust != Adjust::default() {
-            let texture = self.texture(
-                extent,
-                COLOR,
-                "graded source",
-                Usage::STORAGE_BINDING | Usage::COPY_SRC,
-            );
-            let output = texture.create_view(&Default::default());
-            let uniform = self.params(&edit.adjust);
-            self.adjust.run(
-                self,
-                encoder,
-                extent,
-                &[
-                    entry(0, Resource::TextureView(&image.source_view)),
-                    entry(1, Resource::TextureView(&output)),
-                    entry(2, uniform.as_entire_binding()),
-                ],
-            );
-            Some((texture, output))
+        let graded = if cached_negative.is_none() {
+            self.grade(encoder, image, &edit.adjust)
         } else {
             None
         };
-        let (source, view) = graded
+        let lens_image = if cached_negative.is_none() && lens_effects != LensEffects::default() {
+            let source = graded.as_ref().map_or(&image.source_view, |(_, view)| view);
+            Some(self.lens.apply(
+                self,
+                encoder,
+                image,
+                source,
+                frame_size,
+                lens_effects,
+                lens_light,
+            ))
+        } else {
+            None
+        };
+        let (source, view) = lens_image
             .as_ref()
-            .map(|(a, b)| (a, b))
-            .unwrap_or((&image.source, &image.source_view));
+            .or(graded.as_ref())
+            .map_or((&image.source, &image.source_view), |(texture, view)| {
+                (texture, view)
+            });
         if film.bypass() {
             encoder.copy_texture_to_texture(
                 source.as_image_copy(),
@@ -536,9 +548,10 @@ impl Gpu {
         &self,
         image: &mut Image,
         edit: &Edit,
-        edge: u32,
+        frame_size: [u32; 2],
         seed: u64,
         [left, top, width, height]: [u32; 4],
+        lens_light: Option<&LensLight>,
     ) -> Result<Vec<u8>, String> {
         if width == 0
             || height == 0
@@ -555,7 +568,7 @@ impl Gpu {
             mapped_at_creation: false,
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        self.encode(&mut encoder, image, edit, edge, seed)?;
+        self.encode(&mut encoder, image, edit, frame_size, seed, lens_light)?;
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 origin: wgpu::Origin3d {
@@ -601,6 +614,49 @@ impl Gpu {
             }
         }
         Ok(rgb)
+    }
+
+    pub fn prepare_lens_light(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        overview: &Image,
+        adjust: &Adjust,
+    ) -> LensLight {
+        let graded = self.grade(encoder, overview, adjust);
+        let source = graded
+            .as_ref()
+            .map_or(&overview.source_view, |(_, view)| view);
+        self.lens.prepare(self, encoder, overview.extent, source)
+    }
+
+    fn grade(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        image: &Image,
+        adjust: &Adjust,
+    ) -> Option<(wgpu::Texture, wgpu::TextureView)> {
+        if *adjust == Adjust::default() {
+            return None;
+        }
+        let texture = self.texture(
+            image.extent,
+            COLOR,
+            "graded source",
+            Usage::STORAGE_BINDING | Usage::COPY_SRC,
+        );
+        let output = texture.create_view(&Default::default());
+        let uniform = self.params(adjust);
+        self.adjust.run(
+            self,
+            encoder,
+            image.extent,
+            &[
+                entry(0, Resource::TextureView(&image.source_view)),
+                entry(1, Resource::TextureView(&output)),
+                entry(2, uniform.as_entire_binding()),
+            ],
+        );
+        Some((texture, output))
     }
 
     fn cached_plate(&self, key: PlateKey) -> Rc<Plate> {
@@ -795,7 +851,7 @@ impl Gpu {
             .create_view(&Default::default())
     }
 
-    fn params(&self, values: &impl Pod) -> wgpu::Buffer {
+    pub(crate) fn params(&self, values: &impl Pod) -> wgpu::Buffer {
         self.buffer(
             "render parameters",
             wgpu::BufferUsages::UNIFORM,
@@ -813,7 +869,7 @@ impl Gpu {
     }
 }
 
-fn sample(filterable: bool) -> wgpu::BindingType {
+pub(crate) fn sample(filterable: bool) -> wgpu::BindingType {
     wgpu::BindingType::Texture {
         sample_type: wgpu::TextureSampleType::Float { filterable },
         view_dimension: wgpu::TextureViewDimension::D2,
@@ -825,7 +881,7 @@ pub fn texture_binding() -> wgpu::BindingType {
     sample(true)
 }
 
-fn write(format: TextureFormat) -> wgpu::BindingType {
+pub(crate) fn write(format: TextureFormat) -> wgpu::BindingType {
     wgpu::BindingType::StorageTexture {
         access: wgpu::StorageTextureAccess::WriteOnly,
         format,
@@ -833,7 +889,7 @@ fn write(format: TextureFormat) -> wgpu::BindingType {
     }
 }
 
-fn uniform(size: usize, has_dynamic_offset: bool) -> wgpu::BindingType {
+pub(crate) fn uniform(size: usize, has_dynamic_offset: bool) -> wgpu::BindingType {
     wgpu::BindingType::Buffer {
         ty: wgpu::BufferBindingType::Uniform,
         has_dynamic_offset,
@@ -841,7 +897,7 @@ fn uniform(size: usize, has_dynamic_offset: bool) -> wgpu::BindingType {
     }
 }
 
-fn storage(read_only: bool) -> wgpu::BindingType {
+pub(crate) fn storage(read_only: bool) -> wgpu::BindingType {
     wgpu::BindingType::Buffer {
         ty: wgpu::BufferBindingType::Storage { read_only },
         has_dynamic_offset: false,

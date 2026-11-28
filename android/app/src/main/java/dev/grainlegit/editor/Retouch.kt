@@ -516,7 +516,7 @@ private fun bakedDetailLayer(
     val h = (bottom - top + 1) * n
     val edge = max(1, (photoEdge / unit).roundToInt())
     val grainy = film.grainy()
-    val pad = NativeRenderer.padding(grainy, edge)
+    val pad = NativeRenderer.padding(grainy, edge, edge)
     val outerWidth = w + 2 * pad
     val outerHeight = h + 2 * pad
     val base = fillAtGrainResolution(fill, n, left * n - pad, top * n - pad, outerWidth, outerHeight)

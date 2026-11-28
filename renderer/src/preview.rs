@@ -1,5 +1,6 @@
+use crate::edit::{Adjust, Edit};
 use crate::gpu::{entry, texture_binding, Gpu, Image};
-use crate::{edit::Edit, emulsion};
+use crate::lens::LensLight;
 use bytemuck::{Pod, Zeroable};
 use std::num::NonZeroU64;
 
@@ -30,16 +31,15 @@ pub struct Photo {
     pub seed: u64,
     pub fit: Image,
     pub detail: Option<Image>,
+    pub lens_light: Option<(Adjust, LensLight)>,
 }
 
 impl Photo {
     fn covers_viewport(&self, image: &Image, viewport: [u32; 2], frame: &Frame) -> bool {
         let extent = [image.extent.width, image.extent.height];
-        let edge = self.size[0].max(self.size[1]);
-        let Ok(pad) = emulsion::padding(edge, &frame.edit.film) else {
+        let Ok(pad) = frame.edit.padding(self.size) else {
             return false;
         };
-        let pad = pad + u32::from(frame.edit.adjust.tones[3] > 0.0);
         (0..2).all(|axis| {
             let half = viewport[axis] as f32 / (2.0 * frame.scale);
             let left = (frame.center[axis] - half).floor().max(0.0);
@@ -52,7 +52,7 @@ impl Photo {
             let safe_right = if end == self.size[axis] {
                 end
             } else {
-                end - pad
+                end.saturating_sub(pad)
             };
             left >= safe_left as f32 && right <= safe_right as f32
         })
@@ -152,23 +152,34 @@ impl Presenter {
         frame: &Frame,
     ) -> Result<(), String> {
         let bindings = if let Some(photo) = photo {
+            let original = frame.compare;
+            let needs_light = !original && frame.edit.lens.effects().needs_light();
+            if needs_light
+                && !photo
+                    .lens_light
+                    .as_ref()
+                    .is_some_and(|(adjust, _)| *adjust == frame.edit.adjust)
+            {
+                let light = gpu.prepare_lens_light(encoder, &photo.fit, &frame.edit.adjust);
+                photo.lens_light = Some((frame.edit.adjust, light));
+            }
             let detail = frame.use_detail
                 && frame.preview_to_source.is_none()
                 && photo
                     .detail
                     .as_ref()
                     .is_some_and(|image| photo.covers_viewport(image, viewport, frame));
-            let (image, span, edge) = if detail {
+            let (image, span, frame_size) = if detail {
                 let image = photo.detail.as_mut().unwrap();
                 let span = [image.extent.width, image.extent.height];
-                (image, span, photo.size[0].max(photo.size[1]))
+                (image, span, photo.size)
             } else {
                 let extent = photo.fit.extent;
-                (&mut photo.fit, photo.size, extent.width.max(extent.height))
+                (&mut photo.fit, photo.size, [extent.width, extent.height])
             };
-            let original = frame.compare;
             if !original {
-                gpu.encode(encoder, image, &frame.edit, edge, photo.seed)?;
+                let light = photo.lens_light.as_ref().map(|(_, light)| light);
+                gpu.encode(encoder, image, &frame.edit, frame_size, photo.seed, light)?;
             }
             let [a, b, c, d, e, f, g, h, i] = frame
                 .preview_to_source

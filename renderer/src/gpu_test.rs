@@ -18,7 +18,7 @@ fn negative_preserves_grain_across_bands_and_viewport_crops() {
         let mut full = gpu
             .upload([width, height], [0, 0], width * 4, &source)
             .unwrap();
-        let full_scan = scan(&gpu, &mut full, width);
+        let full_scan = scan(&gpu, &mut full, [width, height]);
         assert_ne!(full_scan, source);
         let crop_size = [203, 103];
         let origin = [1801, 5];
@@ -26,7 +26,7 @@ fn negative_preserves_grain_across_bands_and_viewport_crops() {
         let mut crop = gpu
             .upload(crop_size, origin, crop_size[0] * 4, &portrait)
             .unwrap();
-        let crop_scan = scan(&gpu, &mut crop, width);
+        let crop_scan = scan(&gpu, &mut crop, [width, height]);
         for y in 4..crop_size[1] - 4 {
             let full_index = ((y + origin[1]) * width + origin[0] + 4) as usize * 4;
             let crop_index = (y * crop_size[0] + 4) as usize * 4;
@@ -91,6 +91,7 @@ fn negative_preserves_grain_across_bands_and_viewport_crops() {
             seed: SEED,
             fit: full,
             detail: Some(crop),
+            lens_light: None,
         };
         let presenter = Presenter::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb);
         let extent = wgpu::Extent3d {
@@ -181,9 +182,9 @@ fn pixels(width: u32, height: u32, origin_x: u32) -> Vec<u8> {
         .collect()
 }
 
-fn scan(gpu: &Gpu, image: &mut Image, edge: u32) -> Vec<u8> {
+fn scan(gpu: &Gpu, image: &mut Image, size: [u32; 2]) -> Vec<u8> {
     let mut encoder = gpu.device.create_command_encoder(&Default::default());
-    gpu.encode(&mut encoder, image, &Edit::default(), edge, SEED)
+    gpu.encode(&mut encoder, image, &Edit::default(), size, SEED, None)
         .unwrap();
     read(gpu, encoder, &image.output, image.extent)
 }
@@ -290,10 +291,24 @@ fn optical_print_matches_reference_and_tiled_readback() {
                 ..Default::default()
             };
             let scan = gpu
-                .read_rgb(&mut full, &edit, width, SEED, [0, 0, width, height])
+                .read_rgb(
+                    &mut full,
+                    &edit,
+                    [width, height],
+                    SEED,
+                    [0, 0, width, height],
+                    None,
+                )
                 .unwrap();
             let crop = gpu
-                .read_rgb(&mut tile, &edit, width, SEED, [12, 0, 40, height])
+                .read_rgb(
+                    &mut tile,
+                    &edit,
+                    [width, height],
+                    SEED,
+                    [12, 0, 40, height],
+                    None,
+                )
                 .unwrap();
             for (index, row) in scan.chunks_exact(width as usize * 3).enumerate() {
                 let start = (left as usize + 12) * 3;
@@ -447,7 +462,14 @@ fn write_measurement_renders() {
         for (name, edit) in scenarios {
             // Model an interior viewport of a 6000 px long source at 100%.
             let rgb = gpu
-                .read_rgb(&mut image, &edit, 6000, SEED, [0, 0, WIDTH, HEIGHT])
+                .read_rgb(
+                    &mut image,
+                    &edit,
+                    [6000, HEIGHT],
+                    SEED,
+                    [0, 0, WIDTH, HEIGHT],
+                    None,
+                )
                 .unwrap();
             std::fs::write(directory.join(format!("{name}.rgb")), rgb).unwrap();
         }
@@ -483,7 +505,16 @@ fn grain_strength_and_tone_scale_grain_and_keep_the_mean() {
                 },
                 ..Default::default()
             };
-            let rgb = gpu.read_rgb(&mut image, &edit, 6000, SEED, [0, 0, width, height]).unwrap();
+            let rgb = gpu
+                .read_rgb(
+                    &mut image,
+                    &edit,
+                    [6000, height],
+                    SEED,
+                    [0, 0, width, height],
+                    None,
+                )
+                .unwrap();
             let half = |range: std::ops::Range<u32>| {
                 let values: Vec<f64> = (8..height - 8)
                     .flat_map(|y| range.clone().map(move |x| (y * width + x) as usize * 3 + 1))
@@ -506,5 +537,182 @@ fn grain_strength_and_tone_scale_grain_and_keep_the_mean() {
         assert!((weak_light[1] / light[1] - 0.5).abs() < 0.1);
         // Towards highlights: the light half gains grain relative to the dark half.
         assert!(tone_light[1] / light[1] > 1.2 * tone_dark[1] / dark[1]);
+    });
+}
+
+#[test]
+fn lens_stops_down_and_uses_one_full_frame_light_map_for_tiles() {
+    pollster::block_on(async {
+        use crate::edit::Lens;
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..Default::default()
+        });
+        let adapter = instance.request_adapter(&Default::default()).await.unwrap();
+        let gpu = Gpu::new(&adapter).await.unwrap();
+        let size = [832, 576];
+        let [width, height] = size;
+        let source = |[left, top]: [u32; 2], [w, h]: [u32; 2]| -> Vec<u8> {
+            (top..top + h)
+                .flat_map(|y| {
+                    (left..left + w).flat_map(move |x| {
+                        let grey = if (180..194).contains(&x) && (126..140).contains(&y) {
+                            255
+                        } else if (405..411).contains(&x) && (284..291).contains(&y) {
+                            0
+                        } else if x >= 660 && y >= 440 && (x / 2 + y / 2) % 2 == 0 {
+                            192
+                        } else {
+                            72
+                        };
+                        [grey, grey, grey, 255]
+                    })
+                })
+                .collect()
+        };
+        let mut full = gpu
+            .upload(size, [0, 0], width * 4, &source([0, 0], size))
+            .unwrap();
+        let clean = Edit {
+            film: grainlegit::Settings {
+                grain: 0.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        let light = gpu.prepare_lens_light(&mut encoder, &full, &clean.adjust);
+        gpu.queue.submit([encoder.finish()]);
+        let rect = [0, 0, width, height];
+        let mut render = |lens| {
+            gpu.read_rgb(
+                &mut full,
+                &Edit { lens, ..clean },
+                size,
+                SEED,
+                rect,
+                Some(&light),
+            )
+            .unwrap()
+        };
+        let pixel = |rgb: &[u8], x, y| {
+            let i = ((y * width + x) * 3) as usize;
+            [rgb[i], rgb[i + 1], rgb[i + 2]]
+        };
+
+        let vignette = Lens {
+            vignette: -2.3,
+            ..Default::default()
+        };
+        for (aperture, expected) in [(1.4, 29u8), (2.8, 48), (5.6, 72)] {
+            let frame = render(Lens {
+                aperture,
+                ..vignette
+            });
+            assert_eq!(pixel(&frame, width / 2, height / 2), [72; 3]);
+            assert!(pixel(&frame, 0, 0)[0].abs_diff(expected) <= 2);
+        }
+
+        let lens = Lens {
+            aperture: 1.4,
+            glow: 0.3,
+            softness: 0.35,
+            ghosts: 1.0,
+            ..Default::default()
+        };
+        let open = render(lens);
+        let stopped = render(Lens {
+            aperture: 2.8,
+            ..lens
+        });
+        let neutral = render(Lens::default());
+        assert_eq!(stopped, neutral);
+        assert!(
+            pixel(&open, 197, 133)[0] > 77,
+            "glow should spill outside the lamp"
+        );
+        assert!(
+            pixel(&open, 610, 420)[1] > 86,
+            "the ghost should appear opposite the lamp"
+        );
+        assert!(pixel(&open, 814, 554)[0] < 185, "the corners should soften");
+        assert_eq!(pixel(&open, width / 2, height / 2), [72; 3]);
+
+        let edit = Edit {
+            lens: Lens {
+                haze: 0.03,
+                warmth: 0.12,
+                saturation: -0.15,
+                ..lens
+            },
+            ..clean
+        };
+        let expected = gpu
+            .read_rgb(&mut full, &edit, size, SEED, rect, Some(&light))
+            .unwrap();
+        let closed = Edit {
+            lens: Lens { aperture: 5.6, ..edit.lens },
+            ..edit
+        };
+        assert_eq!(
+            neutral,
+            gpu.read_rgb(&mut full, &closed, size, SEED, rect, None).unwrap()
+        );
+        assert_eq!(pixel(&expected, 407, 287), [8; 3]);
+        let centre = pixel(&expected, width / 2, height / 2);
+        assert!(centre[0] > centre[2]);
+        let resized_film = Edit {
+            film: grainlegit::Settings {
+                negative_width: 56.0,
+                ..edit.film
+            },
+            ..edit
+        };
+        assert_eq!(
+            expected,
+            gpu.read_rgb(&mut full, &resized_film, size, SEED, rect, Some(&light))
+                .unwrap()
+        );
+
+        let edit = Edit {
+            adjust: crate::edit::Adjust {
+                tones: [0.0, 0.0, 0.0, 0.5],
+                ..edit.adjust
+            },
+            film: grainlegit::Settings {
+                grain: 0.4,
+                grain_colour: 0.25,
+                ..edit.film
+            },
+            ..edit
+        };
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        let light = gpu.prepare_lens_light(&mut encoder, &full, &edit.adjust);
+        gpu.queue.submit([encoder.finish()]);
+        let expected = gpu
+            .read_rgb(&mut full, &edit, size, SEED, rect, Some(&light))
+            .unwrap();
+        let origin = [540, 310];
+        let tile_size = [270, 250];
+        let mut tile = gpu
+            .upload(
+                tile_size,
+                origin,
+                tile_size[0] * 4,
+                &source(origin, tile_size),
+            )
+            .unwrap();
+        let pad = edit.padding(size).unwrap();
+        let inner = [pad, pad, tile_size[0] - 2 * pad, tile_size[1] - 2 * pad];
+        let tiled = gpu
+            .read_rgb(&mut tile, &edit, size, SEED, inner, Some(&light))
+            .unwrap();
+        for (y, row) in tiled.chunks_exact((inner[2] * 3) as usize).enumerate() {
+            let i = ((origin[1] as usize + y + pad as usize) * width as usize
+                + (origin[0] + pad) as usize)
+                * 3;
+            assert_eq!(row, &expected[i..i + row.len()]);
+        }
     });
 }

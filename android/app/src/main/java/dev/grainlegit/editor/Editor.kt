@@ -118,6 +118,16 @@ private fun selectionImage(input: ImportedPhoto, shown: ActivePhoto): android.gr
     }
 }
 
+private fun fitImage(input: ImportedPhoto, layout: GeometryLayout, retouches: List<Retouch>): android.graphics.Bitmap {
+    val output = layout.output
+    val scale = (FIT_LONG_EDGE.toFloat() / max(output.width, output.height)).coerceAtMost(1f)
+    val size = IntSize((output.width * scale).roundToInt().coerceAtLeast(1),
+        (output.height * scale).roundToInt().coerceAtLeast(1))
+    return withRetouches(input, retouches) { base ->
+        layout.render(base, input.photo.size.bounds(), output.bounds(), size)
+    }
+}
+
 private data class BalanceSample(val point: IntOffset, val color: Color, val gains: List<Float>)
 
 private val decodeDispatcher = Dispatchers.IO.limitedParallelism(1)
@@ -367,13 +377,7 @@ internal fun Editor() {
         try {
             val (layout, bitmap) = withContext(decodeDispatcher) {
                 val layout = GeometryLayout(input.photo.size, sourceGeometry)
-                val output = layout.output
-                val scale = (FIT_LONG_EDGE.toFloat() / max(output.width, output.height)).coerceAtMost(1f)
-                val dimensions = IntSize((output.width * scale).roundToInt().coerceAtLeast(1),
-                    (output.height * scale).roundToInt().coerceAtLeast(1))
-                withRetouches(input, sourceRetouches) { base ->
-                    layout to layout.render(base, input.photo.size.bounds(), output.bounds(), dimensions)
-                }
+                layout to fitImage(input, layout, sourceRetouches)
             }
             val generation = renderer.beginSource(clear = false)
             renderer.setSource(generation, layout.output, bitmap, seed)
@@ -487,8 +491,8 @@ internal fun Editor() {
         view?.pixelAligned(viewport)?.visibleRegion(photoSize, viewport)
     } else null
     val padding = remember(nativeEdit, photoSize, visible != null) {
-        if (visible != null) runCatching {
-            NativeRenderer.padding(nativeEdit, max(photoSize!!.width, photoSize.height))
+        if (visible != null && photoSize != null) runCatching {
+            NativeRenderer.padding(nativeEdit, photoSize.width, photoSize.height)
         }.getOrNull() else null
     }
     var covered by remember(active) { mutableStateOf<Rect?>(null) }
@@ -589,7 +593,7 @@ internal fun Editor() {
             try {
                 val existing = state.draft
                 val remover = Remover(shown.photo, shown.layout, resolver) { bitmap, outer, inner, edge, seed, edit ->
-                    renderer.exportTile(bitmap, outer, inner, edge, seed, edit)
+                    renderer.exportTile(bitmap, outer, inner, IntSize(edge, edge), seed, edit)
                 }
                 val start = System.nanoTime()
                 val selection = state.snapshot() ?: return@launch
@@ -710,15 +714,24 @@ internal fun Editor() {
     }
 
     fun startExport(photo: ActivePhoto) {
+        val input = original ?: return
         exportCancel.set(false)
         exportMessage = null
         progress = 0f
         val snapshot = edit
+        val exportEdit = snapshot.nativeSettings()
+        val prepareLens = snapshot[Tool.LensAperture] < Tool.LensAperture.max &&
+            (snapshot[Tool.LensGlow] > 0f || snapshot[Tool.LensGhosts] > 0f)
         val exportSeed = seed
         exportJob = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 val layout = GeometryLayout(photo.photo.size, snapshot.geometry)
-                savePhoto(context, renderer, photo.photo, layout, exportSeed, snapshot.nativeSettings(), snapshot.retouches,
+                if (prepareLens) {
+                    withContext(decodeDispatcher) {
+                        renderer.prepareExportLens(fitImage(input, layout, snapshot.retouches), exportEdit)
+                    }
+                }
+                savePhoto(context, renderer, photo.photo, layout, exportSeed, exportEdit, snapshot.retouches,
                     exportCancel) {
                     progress = it
                 }
@@ -729,6 +742,7 @@ internal fun Editor() {
             } catch (error: Exception) {
                 exportMessage = error.message ?: "Could not export the photo"
             } finally {
+                if (prepareLens) renderer.clearExportLens()
                 exportJob = null
             }
         }

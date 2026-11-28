@@ -2,24 +2,31 @@
 
 <img src="design/icon/icon-512.png" width="96" alt="Grainlegit app icon: grainlegit in cream serif type on grainy olive">
 
-Grainlegit is an Android photo editor that grows film grain from the photo instead of laying a noise texture over it. Pick a real negative stock and a frame size. The app turns each pixel into dye density on a simulated negative, forms the grain from individual dye clouds, and scans the result. The GPU renders it live. On-device AI removes objects, and nothing is uploaded.
+Grainlegit is an on-device Android photo editor with an aperture-controlled lens look, film grain formed from simulated dye clouds, and AI object removal.
+
+[Download the signed Android APK](https://github.com/mir/grainlegit/releases/latest). The release build targets Snapdragon 8 Elite Gen 5 (SM8850) and requires Android 16 or later and Vulkan 1.3.
+
+## Lens
+
+Open **Lens** and drag **Aperture** from **f/5.6**, where the lens effect is off, toward **f/1.4** for the full 35/1.4 Double-Asph look. At **f/2.8**, the vignette is about half as strong and the glow and corner softness have faded out.
 
 <p align="center">
-  <img src="docs/readme/grain-panel.webp" width="32%" alt="Grain panel with Portra 400 on 35 mm and Auto grain applied to a photo of a red car">
-  <img src="docs/readme/erase-select.webp" width="32%" alt="Erase with the car's front wheel selected by a single tap">
-  <img src="docs/readme/erase-result.webp" width="32%" alt="The same photo after Remove filled in the wheel">
+  <img src="docs/readme/lens-f56.webp" width="32%" alt="Railway landscape in Grainlegit's Lens tab at f/5.6 with the lens effect off">
+  <img src="docs/readme/lens-f28.webp" width="32%" alt="The same landscape at f/2.8 with gentle corner falloff">
+  <img src="docs/readme/lens-f14.webp" width="32%" alt="The same landscape at f/1.4 with stronger corner falloff and a warmer centre">
   <br>
-  <sub>Portra 400 on 35 mm · one tap selects the wheel · Remove fills it in, all on the phone</sub>
+  <sub>The same photo at f/5.6, f/2.8 and f/1.4. Captured on a Xiaomi 17 Ultra.</sub>
 </p>
 
-## Why it looks different from a grain slider
+Swipe the Lens controls to tune **Vignette**, **Glow**, **Haze**, **Softness**, **Edge warmth**, and **Edge saturation**. **Ghosts** starts at zero. Turn it up to add flare opposite the brightest highlight. Lens effects scale with the photo frame and render before the film negative, so grain stays sharp even where the lens softens the image.
 
-Most editors add grain by blending a fixed noise pattern over the photo. The pattern is the same in shadows and highlights, ignores film format, and changes size when the photo is resized. Grainlegit models what makes grain on film.
+## Film grain
 
-- **Grain comes from the image.** Each colour layer of the negative is built from many small dye clouds. Denser parts of the negative get more clouds, and the clouds land at random. So grain texture changes with tone and colour, the way it does on a scan.
-- **Stocks are calibrated against published data.** Each stock has fine and coarse cloud sizes, dye loads, a tone curve and a colour balance for every layer. Their grain strength is fitted to scans and Kodak granularity data ([sources and method](profiles/grain-calibration.md)). For example, Gold 200's blue-sensitive layer measures about 2.4× the granularity of Ektar 100's, and the render keeps that difference.
+Choose a negative stock and frame size. The GPU turns each pixel into density on a simulated negative, forms grain from dye clouds in each colour layer, and scans the result in real time. Denser areas get more clouds, so grain texture varies with tone and colour.
+
+- **Stocks are calibrated against published data.** Each stock has fine and coarse cloud sizes, dye loads, a tone curve and a colour balance for every layer. For example, Gold 200's blue-sensitive layer measures about 2.4× the granularity of Ektar 100's, and the render keeps that difference. [Calibration sources and method](profiles/grain-calibration.md)
 - **Format sets the grain size.** Clouds are sized in micrometres on the negative, not in pixels. A 6000-pixel photo on 35 mm spreads 36 mm of film across those pixels, so each pixel covers 6 µm. Choosing Super 16 squeezes the same photo onto 12.5 mm and the grain grows about 3×. Choosing 120 makes it about 1.6× finer.
-- **Preview and export match.** Each photo keeps its own grain seed, and the export runs the same GPU shaders in full-resolution tiles. The grain you see at 100% is the grain in the saved JPEG.
+- **Preview and export share the same render pipeline.** Each photo keeps its grain seed. The 100% preview and the full-resolution JPEG use the same lens and grain shaders, with the export rendered in padded tiles.
 
 <p align="center">
   <img src="docs/readme/grain-formats.webp" alt="100% crops of a headlight: the source, then Portra 400 on Super 16, 35 mm and 120 6×6, with grain shrinking as the format grows">
@@ -36,7 +43,7 @@ Take Portra 400 on 35 mm. Each control changes one physical property of the nega
 | --- | --- | --- |
 | **Stock** | Cloud sizes, dye per cloud, tone curve and colour balance for each layer | Ektar is fine-grained and saturated; Gold 200 has strong grain in its blue layer |
 | **Format** | Width of film the photo is spread across, from Super 16 to 8×10 | Smaller formats show larger grain |
-| **Exposure** | Exposure of the negative before it is scanned | Moves tones along the stock's curve. Thin, underexposed areas look different from dense ones. |
+| **Exposure** | Exposure of the negative before it is scanned | Moves tones along the stock's curve. |
 | **Amount** | Clouds are larger and each carries more dye, with fewer of them for the same density | Stronger grain without changing tone |
 | **Size** | Scales every cloud | Coarser or finer grain |
 | **Strength** | Scales how far the scan's light swings around its mean, 0–2× | Weaker or stronger grain with brightness unchanged |
@@ -48,7 +55,7 @@ Take Portra 400 on 35 mm. Each control changes one physical property of the nega
 | **Development** | Push or pull: each layer's contrast and dye load | Push for more contrast and stronger grain, pull for softer results |
 | **Auto** ✦ | Picks a grain size that is just visible on the phone at Fit | A good starting point for any photo size |
 
-## On-device rendering and AI
+## Edit, erase and export
 
 - **GPU renderer.** A Rust engine runs WGSL compute shaders through `wgpu` on Vulkan. It draws a Poisson count of clouds at each site at twice the output resolution, blurs them with the cloud shapes, and averages the light the way a scanner would. The preview always renders the latest edit. At 100% it renders a full-resolution crop of the area on screen.
 - **Erase with local AI.** Tap an object and SAM 3.1 selects it, or paint the area with the brush. MI-GAN shows a fill at once, then a more precise model replaces it: LaMa, or OSOR when installed. The model fills at 512 px, so precise fills then copy full-resolution texture from matching parts of the surroundings and top up grain measured beside the removal. The grain follows how strength changes with brightness around the hole. On a reopened Grainlegit export, Erase redraws the export's own grain over the fill from the settings saved in the file. On Snapdragon 8 Elite Gen 5 (SM8850), the precompiled SAM 3.1 encoder runs on the Hexagon NPU. OSOR is an optional removal model, a one-time 4.3 GiB download, that also runs on the NPU.
@@ -59,9 +66,10 @@ Take Portra 400 on 35 mm. Each control changes one physical property of the nega
 | Area | In the Android app |
 | --- | --- |
 | Recent edits | Open JPEG and HEIF photos through the Android photo picker. Reopen recent photos with their saved settings and grain seeds. |
-| Preview | **Fit**, **100%**, pinch and pan, hold-to-compare, and undo and redo. The controls float over the photo. |
+| Preview | **Fit**, **100%**, pinch and pan, hold-to-compare, undo and redo. The controls float over the photo. |
 | Adjust | Crop, exposure, tone, curves, white balance, colour and sharpening. Curves and white balance preview changes before **Apply**. |
 | Crop | Corner handles, aspect ratios, straightening, perspective, rotation, flips and **Constrain**. |
+| Lens | Aperture and individual controls for the built-in 35/1.4 Double-Asph look. |
 | Grain | Stock, format, Auto and the controls above. |
 | Erase | Tap objects or paint an area, then choose **Remove** and **Apply**. |
 | Export | **Save copy** saves a full-resolution JPEG, with progress and cancellation. |

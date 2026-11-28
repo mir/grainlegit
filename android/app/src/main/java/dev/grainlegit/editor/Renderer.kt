@@ -34,11 +34,13 @@ internal object NativeRenderer {
         handle: Long, edit: String, compare: Boolean, x: Float, y: Float, scale: Float, useDetail: Boolean,
         previewToSource: FloatArray?,
     )
-    @JvmStatic external fun padding(edit: String, edge: Int): Int
+    @JvmStatic external fun padding(edit: String, width: Int, height: Int): Int
     @JvmStatic external fun autoGrainSize(edit: String, width: Int, height: Int): Float
+    @JvmStatic external fun prepareExportLens(handle: Long, bitmap: Bitmap, edit: String)
+    @JvmStatic external fun clearExportLens(handle: Long)
     @JvmStatic external fun exportTile(
         handle: Long, bitmap: Bitmap, x: Int, y: Int, left: Int, top: Int,
-        width: Int, height: Int, edge: Int, seed: Long, edit: String,
+        width: Int, height: Int, frameWidth: Int, frameHeight: Int, seed: Long, edit: String,
     ): ByteArray
     @JvmStatic external fun encodeJpeg(
         raw: String, output: String, width: Int, height: Int, cancelled: AtomicBoolean,
@@ -156,18 +158,31 @@ internal class Renderer(private val reportError: (String?) -> Unit) : AutoClosea
         }
     }
 
+    suspend fun prepareExportLens(bitmap: Bitmap, edit: String) = withBitmap(bitmap) {
+        NativeRenderer.prepareExportLens(handle, bitmap, edit)
+    }
+
+    fun clearExportLens() {
+        worker.post {
+            if (handle != 0L && !closed.get()) guarded { NativeRenderer.clearExportLens(handle) }
+        }
+    }
+
     suspend fun exportTile(
-        bitmap: Bitmap, outer: Rect, inner: Rect, edge: Int, seed: Long, edit: String,
-    ): ByteArray = suspendCancellableCoroutine { continuation ->
+        bitmap: Bitmap, outer: Rect, inner: Rect, frame: IntSize, seed: Long, edit: String,
+    ): ByteArray = withBitmap(bitmap) {
+        NativeRenderer.exportTile(
+            handle, bitmap, outer.left, outer.top, inner.left - outer.left, inner.top - outer.top,
+            inner.width(), inner.height(), frame.width, frame.height, seed, edit,
+        )
+    }
+
+    private suspend fun <T> withBitmap(bitmap: Bitmap, render: () -> T): T = suspendCancellableCoroutine { continuation ->
         if (!worker.post {
             try {
                 if (continuation.isActive) {
                     check(handle != 0L && !closed.get()) { "The Vulkan renderer is unavailable" }
-                    val pixels = NativeRenderer.exportTile(
-                        handle, bitmap, outer.left, outer.top, inner.left - outer.left, inner.top - outer.top,
-                        inner.width(), inner.height(), edge, seed, edit,
-                    )
-                    continuation.resume(pixels)
+                    continuation.resume(render())
                 }
             } catch (error: Exception) {
                 continuation.resumeWithException(error)

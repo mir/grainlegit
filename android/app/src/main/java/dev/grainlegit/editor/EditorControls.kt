@@ -51,13 +51,14 @@ import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
 internal enum class Panel(val title: String, val defaultTool: Tool) {
-    Adjust("Adjust", Tool.Exposure), Negative("Grain", Tool.CameraExposure),
+    Adjust("Adjust", Tool.Exposure), Lens("Lens", Tool.LensAperture), Negative("Grain", Tool.CameraExposure),
 }
 
 // Retained for activity state saved by Android 0.2.
@@ -72,6 +73,10 @@ private val adjustmentTools = listOf(
 private val grainTools = listOf(
     Tool.CameraExposure, Tool.Grain, Tool.GrainSize, Tool.GrainStrength, Tool.GrainTone, Tool.GrainColour, Tool.GrainLoad, Tool.CoarseFraction,
     Tool.RedCloudSize, Tool.GreenCloudSize, Tool.BlueCloudSize, Tool.Development,
+)
+private val lensTools = listOf(
+    Tool.LensAperture, Tool.LensVignette, Tool.LensGlow, Tool.LensHaze, Tool.LensSoftness,
+    Tool.LensWarmth, Tool.LensSaturation, Tool.LensGhosts,
 )
 
 // Translucent black behind controls that float over the photo.
@@ -98,15 +103,23 @@ internal fun EditControls(
             Ruler(tool, edit[tool], disabledHint == null,
                 start, { change(edit.with(tool, it)) }, finish,
                 disabledHint = disabledHint,
-                headerOption = if (coarse) { {
-                    Text(
-                        "Use stock profile", color = if (usingStockMix) accent else muted,
-                        modifier = Modifier.background(if (usingStockMix) selectedColor else controlColor, RoundedCornerShape(6.dp))
-                            .toggleable(usingStockMix, role = Role.Switch) { commit(edit.copy(useCoarseProfile = it)) }
-                            .padding(horizontal = 8.dp),
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                } } else null)
+                headerOption = when {
+                    tool == Tool.LensAperture -> {
+                        { Text("35/1.4 Double-Asph", color = muted, style = MaterialTheme.typography.labelMedium) }
+                    }
+                    coarse -> {
+                        {
+                            Text(
+                                "Use stock profile", color = if (usingStockMix) accent else muted,
+                                modifier = Modifier.background(if (usingStockMix) selectedColor else controlColor, RoundedCornerShape(6.dp))
+                                    .toggleable(usingStockMix, role = Role.Switch) { commit(edit.copy(useCoarseProfile = it)) }
+                                    .padding(horizontal = 8.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
+                    else -> null
+                })
         }
         when (panel) {
             Panel.Adjust -> Row(
@@ -118,6 +131,7 @@ internal fun EditControls(
                     EditorChip(entry.title, selected = entry == tool, onClick = { selectTool(entry) })
                 }
             }
+            Panel.Lens -> ToolStrip(lensTools, tool, selectTool, Modifier.fillMaxWidth())
             Panel.Negative -> Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -381,10 +395,14 @@ internal fun Ruler(
         }
         Canvas(Modifier.fillMaxWidth().height(36.dp).semantics {
             contentDescription = if (label.endsWith(" amount")) label else "$label amount"
-            progressBarRangeInfo = ProgressBarRangeInfo(amount, tool.min..tool.max, tool.steps - 1)
+            val aperture = tool == Tool.LensAperture
+            progressBarRangeInfo = if (aperture) {
+                stateDescription = tool.display(amount)
+                ProgressBarRangeInfo(tool.rulerPosition(amount), 0f..1f, tool.steps - 1)
+            } else ProgressBarRangeInfo(amount, tool.min..tool.max, tool.steps - 1)
             if (enabled) setProgress { value ->
                 latestStart()
-                latestChange(value.coerceIn(tool.min, tool.max))
+                latestChange(if (aperture) tool.rulerValue(value) else value.coerceIn(tool.min, tool.max))
                 latestFinish()
                 true
             }
@@ -421,10 +439,12 @@ internal fun Ruler(
         }) {
             val inset = 2.dp.toPx()
             val width = size.width - 2 * inset
+            val ticks = if (tool == Tool.LensAperture) tool.steps else 14
+            val majorTick = if (tool == Tool.LensAperture) 3 else 7
             drawLine(dividerColor, Offset(inset, center.y), Offset(inset + width, center.y), 1.dp.toPx())
-            for (tick in 0..14) {
-                val x = inset + width * tick / 14
-                val half = if (tick % 7 == 0) 5.dp.toPx() else 2.dp.toPx()
+            for (tick in 0..ticks) {
+                val x = inset + width * tick / ticks
+                val half = if (tick % majorTick == 0) 5.dp.toPx() else 2.dp.toPx()
                 drawLine(dividerColor, Offset(x, center.y - half), Offset(x, center.y + half), 2.dp.toPx(), StrokeCap.Round)
             }
             val x = inset + width * tool.rulerPosition(amount)

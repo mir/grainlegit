@@ -43,7 +43,7 @@ internal suspend fun savePhoto(
     val size = layout.output
     require(size.width <= 65535 && size.height <= 65535) { "JPEG dimensions exceed 65535 pixels" }
     val edge = max(size.width, size.height)
-    val padding = NativeRenderer.padding(edit, edge)
+    val padding = NativeRenderer.padding(edit, size.width, size.height)
     val rows = File.createTempFile("grainlegit-", ".rgb", context.cacheDir)
     try {
         val jpeg = File.createTempFile("grainlegit-", ".jpg", context.cacheDir)
@@ -60,7 +60,7 @@ internal suspend fun savePhoto(
                             val inside = Rect(x, y, (x + 1024).coerceAtMost(size.width), bottom)
                             val outer = inside.copyExpanded(size, padding)
                             val bitmap = photo.renderOutput(resolver, layout, outer, retouches, reader)
-                            val rgb = renderer.exportTile(bitmap, outer, inside, edge, seed, edit)
+                            val rgb = renderer.exportTile(bitmap, outer, inside, size, seed, edit)
                             val rowBytes = inside.width() * 3
                             for (row in 0 until inside.height()) {
                                 rgb.copyInto(stripe, (row * size.width + x) * 3, row * rowBytes, (row + 1) * rowBytes)

@@ -3,9 +3,12 @@ package dev.grainlegit.editor
 import androidx.compose.runtime.saveable.Saver
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.abs
 import kotlin.math.ln
 import kotlin.math.pow
 import kotlin.math.roundToInt
+
+private val lensStops = listOf(1.4f, 1.6f, 1.8f, 2f, 2.2f, 2.5f, 2.8f, 3.2f, 3.5f, 4f, 4.5f, 5f, 5.6f)
 
 internal enum class Tool(
     val title: String,
@@ -22,6 +25,14 @@ internal enum class Tool(
     Temperature("Temperature"), Tint("Tint"), Saturation("Saturation"), Vibrance("Vibrance"),
     WhiteBalance("WB picker"), Sharpen("Sharpen", 0f, 2f),
     CameraExposure("Negative exposure", -2f, 2f, unit = " EV"),
+    LensAperture("Aperture", lensStops.first(), lensStops.last(), lensStops.last(), lensStops.lastIndex),
+    LensVignette("Vignette", -4f, 0f, -2.3f, 40, " EV"),
+    LensGlow("Glow", 0f, 1f, 0.30f, 100),
+    LensHaze("Haze", 0f, 0.12f, 0.03f, 12),
+    LensSoftness("Softness", 0f, 1f, 0.35f, 100),
+    LensWarmth("Edge warmth", -1f, 1f, 0.12f, 200),
+    LensSaturation("Edge saturation", -1f, 1f, -0.15f, 200),
+    LensGhosts("Ghosts", 0f, 1f, 0f, 100),
     Grain("Grain amount", 0f, 3f, 1f, 60, "×"),
     // 0.1–15.85× in tenth-decade stops keeps 1× on a stop and leaves room for Auto on small photos.
     GrainSize("Grain size", 0.1f, 15.85f, 1f, 22, "×", logarithmic = true),
@@ -51,6 +62,7 @@ internal enum class Tool(
     Stock("Stock"), Format("Format"), Medium("Medium");
 
     fun display(value: Float): String = when {
+        this == LensAperture -> "f/${"%.1f".format(value)}"
         logarithmic -> "${"%.2f".format(value)}$unit"
         this == Development -> "%.1f".format(value)
         this == GrainTone -> when {
@@ -64,11 +76,16 @@ internal enum class Tool(
 
     fun rulerPosition(value: Float): Float {
         val bounded = value.coerceIn(min, max)
+        if (this == LensAperture) {
+            val index = lensStops.indices.minBy { abs(lensStops[it] - bounded) }
+            return index.toFloat() / steps
+        }
         return if (logarithmic) ln(bounded / min) / ln(max / min) else (bounded - min) / (max - min)
     }
 
     fun rulerValue(position: Float): Float {
         val stop = (position.coerceIn(0f, 1f) * steps).roundToInt()
+        if (this == LensAperture) return lensStops[stop]
         val fraction = stop.toFloat() / steps
         return if (logarithmic) min * (max / min).pow(fraction) else min + (max - min) * fraction
     }
@@ -128,7 +145,19 @@ internal data class Edit(
             .put("colour", vector(Tool.Temperature, Tool.Tint, Tool.Saturation, Tool.Vibrance))
             .put("balance", JSONArray((balance + 1f).map(Float::toDouble)))
             .put("curves", JSONArray(List(5) { point -> JSONArray(curves.map { it[point].toDouble() }) }))
-        return JSONObject().put("film", film).put("adjust", adjust).toString()
+        val edit = JSONObject().put("film", film).put("adjust", adjust)
+        if (get(Tool.LensAperture) < Tool.LensAperture.max) {
+            edit.put("lens", JSONObject()
+                .put("aperture", get(Tool.LensAperture).toDouble())
+                .put("vignette", get(Tool.LensVignette).toDouble())
+                .put("glow", get(Tool.LensGlow).toDouble())
+                .put("haze", get(Tool.LensHaze).toDouble())
+                .put("softness", get(Tool.LensSoftness).toDouble())
+                .put("warmth", get(Tool.LensWarmth).toDouble())
+                .put("saturation", get(Tool.LensSaturation).toDouble())
+                .put("ghosts", get(Tool.LensGhosts).toDouble()))
+        }
+        return edit.toString()
     }
 
     fun savedSettings(): String {
