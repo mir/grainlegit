@@ -1,5 +1,16 @@
 package dev.grainlegit.editor
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalDensity
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -40,6 +51,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -95,77 +107,79 @@ internal fun EditControls(
     change: (Edit) -> Unit, start: () -> Unit, finish: () -> Unit, commit: (Edit) -> Unit,
     autoGrain: Edit? = null,
 ) {
-    Column(Modifier.fillMaxWidth().background(panelColor).padding(horizontal = 16.dp)) {
-        HorizontalDivider(color = dividerColor)
-        if (tool != Tool.Curves && tool != Tool.WhiteBalance) {
-            val coarse = tool == Tool.CoarseFraction
-            val usingStockMix = coarse && edit.useCoarseProfile
-            if (coarse) {
-                Text(
-                    "Use stock profile", color = if (usingStockMix) accent else muted,
-                    modifier = Modifier.toggleable(usingStockMix, role = Role.Switch) {
-                        commit(edit.copy(useCoarseProfile = it))
-                    }.padding(horizontal = 8.dp, vertical = 10.dp),
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
-            if (!usingStockMix) {
-                Ruler(tool, edit[tool], start, { change(edit.with(tool, it)) }, finish, default = edit.defaultValue(tool))
-            }
-        }
-        when (panel) {
-            Panel.Adjust -> Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                EditorChip("Crop", onClick = onCrop)
-                adjustmentTools.forEach { entry ->
-                    val value = if (entry == Tool.Curves || entry == Tool.WhiteBalance) null else entry.display(edit[entry])
-                    EditorChip(entry.title, selected = entry == tool, value = value) { selectTool(entry) }
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Column(Modifier.fillMaxWidth().glassPanel().padding(vertical = 8.dp)) {
+            if (tool != Tool.Curves && tool != Tool.WhiteBalance) Column(Modifier.padding(horizontal = 14.dp)) {
+                val coarse = tool == Tool.CoarseFraction
+                val usingStockMix = coarse && edit.useCoarseProfile
+                if (coarse) {
+                    Text(
+                        "Use stock profile", color = if (usingStockMix) accent else muted,
+                        modifier = Modifier.toggleable(usingStockMix, role = Role.Switch) {
+                            commit(edit.copy(useCoarseProfile = it))
+                        }.padding(horizontal = 8.dp, vertical = 10.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+                if (!usingStockMix) {
+                    Ruler(tool, edit[tool], start, { change(edit.with(tool, it)) }, finish, default = edit.defaultValue(tool))
                 }
             }
-            Panel.Lens -> Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                lensTools.forEach { entry ->
-                    EditorChip(entry.title, selected = entry == tool, value = entry.display(edit[entry])) { selectTool(entry) }
-                }
-            }
-            Panel.Negative -> Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                if (autoGrain != null) {
-                    AutoGrainButton(applied = autoGrain == edit) {
-                        commit(autoGrain)
-                        selectTool(Tool.GrainSize)
+            when (panel) {
+                Panel.Adjust -> Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    EditorChip("Crop", onClick = onCrop)
+                    adjustmentTools.forEach { entry ->
+                        val value = if (entry == Tool.Curves || entry == Tool.WhiteBalance) null else entry.display(edit[entry])
+                        EditorChip(entry.title, selected = entry == tool, value = value) { selectTool(entry) }
                     }
                 }
-                val strength = Tool.StockStrength
-                val stockLabel = if (edit.stock.id == "generic") "Stock" else "Stock · ${strength.display(edit[strength])}"
-                EditorChip(stockLabel, selected = tool == strength, value = edit.stock.name, chevron = true) {
-                    showSheet(Sheet.Stock)
+                Panel.Lens -> Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    lensTools.forEach { entry ->
+                        EditorChip(entry.title, selected = entry == tool, value = entry.display(edit[entry])) { selectTool(entry) }
+                    }
                 }
-                EditorChip("Format", value = formatNames[edit.format], chevron = true, onClick = { showSheet(Sheet.Format) })
-                grainTools.forEach { entry ->
-                    val value = if (entry == Tool.CoarseFraction && edit.useCoarseProfile) "Stock" else entry.display(edit[entry])
-                    EditorChip(entry.chipTitle(), selected = entry == tool, value = value) { selectTool(entry) }
+                Panel.Negative -> Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (autoGrain != null) {
+                        AutoGrainButton(applied = autoGrain == edit) {
+                            commit(autoGrain)
+                            selectTool(Tool.GrainSize)
+                        }
+                    }
+                    val strength = Tool.StockStrength
+                    val stockLabel = if (edit.stock.id == "generic") "Stock" else "Stock · ${strength.display(edit[strength])}"
+                    EditorChip(stockLabel, selected = tool == strength, value = edit.stock.name, chevron = true) {
+                        showSheet(Sheet.Stock)
+                    }
+                    EditorChip("Format", value = formatNames[edit.format], chevron = true, onClick = { showSheet(Sheet.Format) })
+                    grainTools.forEach { entry ->
+                        val value = if (entry == Tool.CoarseFraction && edit.useCoarseProfile) "Stock" else entry.display(edit[entry])
+                        EditorChip(entry.chipTitle(), selected = entry == tool, value = value) { selectTool(entry) }
+                    }
                 }
             }
         }
-        HorizontalDivider(Modifier.padding(top = 6.dp), color = dividerColor)
-        Row(
-            Modifier.fillMaxWidth().padding(vertical = 5.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            EditorChip("Erase", modifier = Modifier.weight(1f), plain = true, onClick = onErase)
-            Panel.entries.forEach {
-                EditorChip(it.title, selected = panel == it, modifier = Modifier.weight(1f), plain = true,
-                    role = Role.Tab, onClick = { if (panel != it) setPanel(it) })
-            }
-        }
+        GlassTabBar(editorTabs, selected = panel.ordinal + 1, onSelect = { index ->
+            if (index == 0) onErase() else Panel.entries[index - 1].let { if (it != panel) setPanel(it) }
+        })
     }
 }
+
+private val editorTabs = listOf(
+    GlassTab("Erase", EditorSymbol.Erase), GlassTab(Panel.Lens.title, EditorSymbol.Lens),
+    GlassTab(Panel.Negative.title, EditorSymbol.Film), GlassTab(Panel.Adjust.title, EditorSymbol.Adjust),
+)
 
 // Sets grain size so the grain is clearly visible with the whole photo on screen.
 @Composable
@@ -199,7 +213,7 @@ internal fun EditorChip(
     chevron: Boolean = false, role: Role = Role.Button, value: String? = null, onClick: () -> Unit,
 ) {
     val style = MaterialTheme.typography.labelLarge
-    val shape = RoundedCornerShape(10.dp)
+    val shape = RoundedCornerShape(12.dp)
     Box(
         modifier.heightIn(min = 48.dp).selectable(selected = selected, role = role, onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -208,9 +222,9 @@ internal fun EditorChip(
             Modifier.then(if (plain) Modifier.fillMaxWidth() else Modifier)
                 .then(if (value == null) Modifier.heightIn(min = 34.dp) else Modifier.widthIn(min = 61.dp))
                 .background(when {
-                    selected -> selectedColor
+                    selected -> Color.White.copy(alpha = 0.2f)
                     plain -> Color.Transparent
-                    else -> controlColor
+                    else -> Color.White.copy(alpha = 0.07f)
                 }, shape)
                 .padding(horizontal = if (plain) 4.dp else 10.dp, vertical = if (value == null) 0.dp else 4.dp),
             horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
@@ -276,10 +290,10 @@ internal fun CropControls(
     }
 }
 
-internal enum class EditorSymbol { Down, Close, Back, Undo, Redo, Compare, Check, Rotate, FlipX, FlipY, Auto }
+internal enum class EditorSymbol { Down, Close, Back, Undo, Redo, Compare, Check, Rotate, FlipX, FlipY, Auto, Erase, Lens, Film, Adjust }
 
 @Composable
-private fun Glyph(symbol: EditorSymbol, color: Color, modifier: Modifier = Modifier.size(22.dp)) {
+internal fun Glyph(symbol: EditorSymbol, color: Color, modifier: Modifier = Modifier.size(22.dp)) {
     Canvas(modifier) {
         val path = Path()
         fun line(vararg point: Float) {
@@ -319,6 +333,28 @@ private fun Glyph(symbol: EditorSymbol, color: Color, modifier: Modifier = Modif
             EditorSymbol.Auto -> {
                 line(11f, 4f, 12.8f, 10.2f, 19f, 12f, 12.8f, 13.8f, 11f, 20f, 9.2f, 13.8f, 3f, 12f, 9.2f, 10.2f, 11f, 4f)
                 line(19f, 2.5f, 19f, 7.5f); line(16.5f, 5f, 21.5f, 5f)
+            }
+            EditorSymbol.Erase -> {
+                line(9f, 20f, 3.5f, 14.5f, 13f, 5f, 20.5f, 12.5f, 13f, 20f, 9f, 20f)
+                line(8f, 10f, 15.5f, 17.5f)
+                line(13f, 20f, 21f, 20f)
+            }
+            EditorSymbol.Lens -> {
+                path.addOval(Rect(Offset(12f, 12f), 8.5f))
+                // Aperture blades.
+                line(12f, 3.5f, 15f, 11f); line(19.4f, 7.8f, 12.8f, 13.6f); line(19.4f, 16.2f, 10.2f, 15f)
+                line(12f, 20.5f, 9f, 13f); line(4.6f, 16.2f, 11.2f, 10.4f); line(4.6f, 7.8f, 13.8f, 9f)
+            }
+            EditorSymbol.Film -> {
+                line(5f, 4f, 19f, 4f, 19f, 20f, 5f, 20f, 5f, 4f)
+                line(8.5f, 4f, 8.5f, 20f); line(15.5f, 4f, 15.5f, 20f)
+                line(5f, 8f, 8.5f, 8f); line(5f, 12f, 8.5f, 12f); line(5f, 16f, 8.5f, 16f)
+                line(15.5f, 8f, 19f, 8f); line(15.5f, 12f, 19f, 12f); line(15.5f, 16f, 19f, 16f)
+            }
+            EditorSymbol.Adjust -> {
+                line(4f, 7f, 12.5f, 7f); line(17.5f, 7f, 20f, 7f); path.addOval(Rect(Offset(15f, 7f), 2.5f))
+                line(4f, 12f, 6.5f, 12f); line(11.5f, 12f, 20f, 12f); path.addOval(Rect(Offset(9f, 12f), 2.5f))
+                line(4f, 17f, 10.5f, 17f); line(15.5f, 17f, 20f, 17f); path.addOval(Rect(Offset(13f, 17f), 2.5f))
             }
             EditorSymbol.FlipY -> {
                 line(3f, 12f, 21f, 12f); line(6f, 9f, 18f, 3f, 18f, 9f, 6f, 9f)
@@ -384,81 +420,106 @@ internal fun Ruler(
     val latestStart by rememberUpdatedState(start)
     val latestFinish by rememberUpdatedState(finish)
     val latestDefault by rememberUpdatedState(default)
+    val scope = rememberCoroutineScope()
+    val press = remember { Animatable(0f, 0.001f) }
+    fun pressThumb(down: Boolean) {
+        scope.launch { press.animateTo(if (down) 1f else 0f, spring(1f, 1000f, 0.001f)) }
+    }
     fun commitValue(value: Float) {
         latestStart()
         latestChange(value)
         latestFinish()
     }
-    Canvas(Modifier.fillMaxWidth().height(42.dp).semantics {
-        contentDescription = if (label.endsWith(" amount") || tool == Tool.StockStrength) label else "$label amount"
-        if (tool == Tool.StockStrength) stateDescription = tool.display(amount)
-        val aperture = tool == Tool.LensAperture
-        progressBarRangeInfo = if (aperture) {
-            stateDescription = tool.display(amount)
-            ProgressBarRangeInfo(tool.rulerPosition(amount), 0f..1f, tool.steps - 1)
-        } else ProgressBarRangeInfo(amount, tool.min..tool.max, tool.steps - 1)
-        setProgress { value ->
-            commitValue(if (aperture) tool.rulerValue(value) else value.coerceIn(tool.min, tool.max))
-            true
-        }
-        customActions = listOf(CustomAccessibilityAction("Reset to default") {
-            commitValue(latestDefault)
-            true
-        })
-    }.pointerInput(tool) {
-        fun valueAt(x: Float): Float {
-            val inset = 2.dp.toPx()
-            val fraction = ((x - inset) / (size.width - 2 * inset)).coerceIn(0f, 1f)
-            return tool.rulerValue(fraction)
-        }
-        suspend fun AwaitPointerEventScope.trackSliderGesture(down: PointerInputChange): Float? {
-            var editing = false
-            try {
-                while (true) {
-                    val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: return null
-                    if (change.isConsumed) return null
-                    if (!editing) {
-                        val delta = change.position - down.position
-                        val slop = viewConfiguration.touchSlop
-                        if (abs(delta.y) > slop && abs(delta.y) > abs(delta.x)) return null
-                        if (abs(delta.x) < slop) {
-                            if (change.pressed) continue
-                            change.consume()
-                            return change.position.x
+    val track = rememberLayerBackdrop()
+    // While dragging, the thumb follows the finger; values snap to steps and the photo catches up.
+    var dragPosition by remember(tool) { mutableStateOf<Float?>(null) }
+    BoxWithConstraints(Modifier.fillMaxWidth().height(42.dp), contentAlignment = Alignment.CenterStart) {
+        val trackWidth = constraints.maxWidth.toFloat()
+        val inset = with(LocalDensity.current) { 2.dp.toPx() }
+        Canvas(Modifier.matchParentSize().layerBackdrop(track).semantics {
+            contentDescription = if (label.endsWith(" amount") || tool == Tool.StockStrength) label else "$label amount"
+            if (tool == Tool.StockStrength) stateDescription = tool.display(amount)
+            val aperture = tool == Tool.LensAperture
+            progressBarRangeInfo = if (aperture) {
+                stateDescription = tool.display(amount)
+                ProgressBarRangeInfo(tool.rulerPosition(amount), 0f..1f, tool.steps - 1)
+            } else ProgressBarRangeInfo(amount, tool.min..tool.max, tool.steps - 1)
+            setProgress { value ->
+                commitValue(if (aperture) tool.rulerValue(value) else value.coerceIn(tool.min, tool.max))
+                true
+            }
+            customActions = listOf(CustomAccessibilityAction("Reset to default") {
+                commitValue(latestDefault)
+                true
+            })
+        }.pointerInput(tool) {
+            fun fractionAt(x: Float): Float {
+                val inset = 2.dp.toPx()
+                return ((x - inset) / (size.width - 2 * inset)).coerceIn(0f, 1f)
+            }
+            fun valueAt(x: Float) = tool.rulerValue(fractionAt(x))
+            suspend fun AwaitPointerEventScope.trackSliderGesture(down: PointerInputChange): Float? {
+                var editing = false
+                try {
+                    while (true) {
+                        val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: return null
+                        if (change.isConsumed) return null
+                        if (!editing) {
+                            val delta = change.position - down.position
+                            val slop = viewConfiguration.touchSlop
+                            if (abs(delta.y) > slop && abs(delta.y) > abs(delta.x)) return null
+                            if (abs(delta.x) < slop) {
+                                if (change.pressed) continue
+                                change.consume()
+                                return change.position.x
+                            }
+                            latestStart()
+                            pressThumb(true)
+                            editing = true
                         }
-                        latestStart()
-                        editing = true
+                        dragPosition = fractionAt(change.position.x)
+                        latestChange(valueAt(change.position.x))
+                        change.consume()
+                        if (!change.pressed) return null
                     }
-                    latestChange(valueAt(change.position.x))
-                    change.consume()
-                    if (!change.pressed) return null
+                } finally {
+                    if (editing) {
+                        dragPosition = null
+                        latestFinish()
+                        pressThumb(false)
+                    }
                 }
-            } finally {
-                if (editing) latestFinish()
+            }
+            awaitEachGesture {
+                val firstTap = trackSliderGesture(awaitFirstDown()) ?: return@awaitEachGesture
+                // Wait before applying a tap so a double tap creates only one undo step.
+                val secondDown = withTimeoutOrNull(viewConfiguration.doubleTapTimeoutMillis) { awaitFirstDown() }
+                val tapped = if (secondDown == null) valueAt(firstTap)
+                    else if (trackSliderGesture(secondDown) != null) latestDefault else null
+                if (tapped != null) {
+                    commitValue(tapped)
+                    // A brief swell so the thumb visibly answers the tap.
+                    scope.launch {
+                        press.animateTo(1f, spring(1f, 1000f, 0.001f))
+                        press.animateTo(0f, spring(1f, 300f, 0.001f))
+                    }
+                }
+            }
+        }) {
+            val inset = 2.dp.toPx()
+            val width = size.width - 2 * inset
+            val ticks = if (tool == Tool.LensAperture) tool.steps else 14
+            val majorTick = if (tool == Tool.LensAperture) 3 else 7
+            val tickColor = muted.copy(alpha = 0.55f)
+            drawLine(dividerColor, Offset(inset, center.y), Offset(inset + width, center.y), 1.dp.toPx())
+            for (tick in 0..ticks) {
+                val x = inset + width * tick / ticks
+                val half = if (tick % majorTick == 0) 5.dp.toPx() else 2.dp.toPx()
+                drawLine(tickColor, Offset(x, center.y - half), Offset(x, center.y + half), 2.dp.toPx(), StrokeCap.Round)
             }
         }
-        awaitEachGesture {
-            val firstTap = trackSliderGesture(awaitFirstDown()) ?: return@awaitEachGesture
-            // Wait before applying a tap so a double tap creates only one undo step.
-            val secondDown = withTimeoutOrNull(viewConfiguration.doubleTapTimeoutMillis) { awaitFirstDown() }
-            if (secondDown == null) commitValue(valueAt(firstTap))
-            else if (trackSliderGesture(secondDown) != null) commitValue(latestDefault)
-        }
-    }) {
-        val inset = 2.dp.toPx()
-        val width = size.width - 2 * inset
-        val ticks = if (tool == Tool.LensAperture) tool.steps else 14
-        val majorTick = if (tool == Tool.LensAperture) 3 else 7
-        val tickColor = muted.copy(alpha = 0.55f)
-        drawLine(dividerColor, Offset(inset, center.y), Offset(inset + width, center.y), 1.dp.toPx())
-        for (tick in 0..ticks) {
-            val x = inset + width * tick / ticks
-            val half = if (tick % majorTick == 0) 5.dp.toPx() else 2.dp.toPx()
-            drawLine(tickColor, Offset(x, center.y - half), Offset(x, center.y + half), 2.dp.toPx(), StrokeCap.Round)
-        }
-        val x = inset + width * tool.rulerPosition(amount)
-        drawLine(accent, Offset(x, center.y - 8.dp.toPx()), Offset(x, center.y + 8.dp.toPx()),
-            4.dp.toPx(), StrokeCap.Round)
+        val position = dragPosition ?: tool.rulerPosition(amount)
+        GlassThumb(track, (inset + (trackWidth - 2 * inset) * position) / trackWidth, { press.value }, trackWidth)
     }
 }
 

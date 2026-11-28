@@ -220,6 +220,26 @@ impl Engine {
         if size.contains(&0) {
             return Ok(());
         }
+        // Finish the film processing before taking a buffer from the surface. The UI composites the
+        // preview, so a buffer queued while the GPU is still busy would stall the UI until it finishes.
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("editor film"),
+            });
+        let bindings = surface.presenter.prepare(
+            &self.gpu,
+            &mut encoder,
+            size,
+            self.photo.as_mut(),
+            &frame,
+        )?;
+        let processed = self.gpu.queue.submit([encoder.finish()]);
+        self.gpu
+            .device
+            .poll(wgpu::PollType::wait_for(processed))
+            .map_err(|error| format!("GPU completion failed {error:?}"))?;
         let texture = match surface.surface.get_current_texture() {
             Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
                 surface.surface.configure(&self.gpu.device, &surface.config);
@@ -235,14 +255,9 @@ impl Engine {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("editor preview"),
             });
-        surface.presenter.encode(
-            &self.gpu,
-            &mut encoder,
-            &view,
-            size,
-            self.photo.as_mut(),
-            &frame,
-        )?;
+        surface
+            .presenter
+            .draw(&mut encoder, &view, bindings.as_ref());
         let submitted = self.gpu.queue.submit([encoder.finish()]);
         texture.present();
         self.gpu
@@ -271,7 +286,9 @@ impl LockedBitmap {
         let mut pointer = std::ptr::null_mut();
         let status = unsafe { AndroidBitmap_lockPixels(env, bitmap, &mut pointer) };
         if status != 0 {
-            return Err(format!("Android could not lock the bitmap pixels ({status})"));
+            return Err(format!(
+                "Android could not lock the bitmap pixels ({status})"
+            ));
         }
         let Some(pixels) = NonNull::new(pointer) else {
             unsafe { AndroidBitmap_unlockPixels(env, bitmap) };

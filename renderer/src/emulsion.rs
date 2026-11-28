@@ -75,13 +75,15 @@ fn material(settings: &Settings, print: bool) -> Material {
     let grain_strength = strength.min(1.0);
     Material {
         fog_density: blend(generic.fog_density, stock.fog_density).max(0.0),
-        image_density_range: blend(generic.image_density_range, stock.image_density_range)
-            .max(0.1),
+        image_density_range: blend(generic.image_density_range, stock.image_density_range).max(0.1),
         exposure_knee: blend(generic.exposure_knee, stock.exposure_knee).max(0.0),
         shoulder_range: blend(generic.shoulder_range, stock.shoulder_range).max(0.05),
         saturation: blend(generic.saturation, stock.saturation).max(0.0),
         exposure_balance_ev: std::array::from_fn(|index| {
-            blend(generic.exposure_balance_ev[index], stock.exposure_balance_ev[index])
+            blend(
+                generic.exposure_balance_ev[index],
+                stock.exposure_balance_ev[index],
+            )
         }),
         development_sensitivity: blend_triplet(
             generic.development_sensitivity,
@@ -133,7 +135,8 @@ const AUTO_VIEW: [f64; 2] = [1200.0, 1500.0];
 /// Luma-weighted fine-cloud sigma, in screen pixels at Fit, that viewers picked as just clearly
 /// visible across 0.3–200 MP photos: their 1.1 px mean over the layers of the earlier Generic
 /// profile (2.2, 2.0, 2.35 µm) is 1.058 px luma-weighted.
-const AUTO_SCREEN_SIGMA: f64 = 1.1 * (0.2126 * 2.2 + 0.7152 * 2.0 + 0.0722 * 2.35) / ((2.2 + 2.0 + 2.35) / 3.0);
+const AUTO_SCREEN_SIGMA: f64 =
+    1.1 * (0.2126 * 2.2 + 0.7152 * 2.0 + 0.0722 * 2.35) / ((2.2 + 2.0 + 2.35) / 3.0);
 /// Visibility is mostly luminance, so the fine-cloud reference weights layers by Rec. 709 luma.
 const LUMA: [f64; 3] = [0.2126, 0.7152, 0.0722];
 
@@ -446,7 +449,10 @@ mod tests {
             [3000, 4000],
         ] {
             let seen = fit_sigma(width, height, &settings);
-            assert!((seen - AUTO_SCREEN_SIGMA).abs() < 1e-9, "{width}×{height}: {seen}");
+            assert!(
+                (seen - AUTO_SCREEN_SIGMA).abs() < 1e-9,
+                "{width}×{height}: {seen}"
+            );
         }
     }
 

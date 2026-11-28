@@ -142,6 +142,7 @@ impl Presenter {
         }
     }
 
+    #[cfg(test)]
     pub fn encode(
         &self,
         gpu: &Gpu,
@@ -151,7 +152,21 @@ impl Presenter {
         photo: Option<&mut Photo>,
         frame: &Frame,
     ) -> Result<(), String> {
-        let bindings = if let Some(photo) = photo {
+        let bindings = self.prepare(gpu, encoder, viewport, photo, frame)?;
+        self.draw(encoder, target, bindings.as_ref());
+        Ok(())
+    }
+
+    /// Records the film processing for a frame. Its output is drawn to the screen with [Self::draw].
+    pub fn prepare(
+        &self,
+        gpu: &Gpu,
+        encoder: &mut wgpu::CommandEncoder,
+        viewport: [u32; 2],
+        photo: Option<&mut Photo>,
+        frame: &Frame,
+    ) -> Result<Option<wgpu::BindGroup>, String> {
+        Ok(if let Some(photo) = photo {
             let original = frame.compare;
             let needs_light = !original && frame.edit.lens.effects().needs_light();
             if needs_light
@@ -212,8 +227,16 @@ impl Presenter {
             }))
         } else {
             None
-        };
+        })
+    }
 
+    /// Draws a prepared frame, or the background alone, to the screen.
+    pub fn draw(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        bindings: Option<&wgpu::BindGroup>,
+    ) {
         // Match the #101010 editor background where the photo does not fill the viewport.
         let grey: f64 = 16.0 / 255.0;
         let grey = if self.srgb {
@@ -228,17 +251,21 @@ impl Presenter {
                 resolve_target: None,
                 depth_slice: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color { r: grey, g: grey, b: grey, a: 1.0 }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: grey,
+                        g: grey,
+                        b: grey,
+                        a: 1.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
             ..Default::default()
         });
-        if let Some(ref bindings) = bindings {
+        if let Some(bindings) = bindings {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, bindings, &[]);
             pass.draw(0..3, 0..1);
         }
-        Ok(())
     }
 }

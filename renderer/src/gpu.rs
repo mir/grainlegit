@@ -441,6 +441,7 @@ impl Gpu {
         } else {
             None
         };
+        self.flush(encoder);
         let lens_image = if cached_negative.is_none() && lens_effects != LensEffects::default() {
             let source = graded.as_ref().map_or(&image.source_view, |(_, view)| view);
             Some(self.lens.apply(
@@ -455,6 +456,7 @@ impl Gpu {
         } else {
             None
         };
+        self.flush(encoder);
         let (source, view) = lens_image
             .as_ref()
             .or(graded.as_ref())
@@ -471,7 +473,9 @@ impl Gpu {
             let printing = film.print_medium != 0;
             let scan_optics = film.scan_blur > 0.0 || film.scan_aperture > 1.0;
             let negative_balance = film.grain > 1e-6
-                && (film.grain_colour < 1.0 || film.grain_strength != 1.0 || film.grain_tone != 0.0);
+                && (film.grain_colour < 1.0
+                    || film.grain_strength != 1.0
+                    || film.grain_tone != 0.0);
             let negative = if let Some(view) = cached_negative {
                 view
             } else {
@@ -685,6 +689,21 @@ impl Gpu {
         plate
     }
 
+    /// Runs the work recorded so far and waits for it. A preview takes tens of milliseconds of GPU
+    /// time, and the GPU runs work from apps in submission order, so the UI can only draw between
+    /// stages that are not yet submitted.
+    fn flush(&self, encoder: &mut wgpu::CommandEncoder) {
+        let label = Some("film stage");
+        let next = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label });
+        let submitted = self
+            .queue
+            .submit([std::mem::replace(encoder, next).finish()]);
+        // A failed wait surfaces again at the final completion wait of the frame.
+        let _ = self.device.poll(wgpu::PollType::wait_for(submitted));
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn plate(
         &self,
@@ -714,7 +733,11 @@ impl Gpu {
             radius: 0,
             curve: emulsion::scan_curve(),
             grain_colour: film.grain_colour as f32,
-            grain_strength: if print { 1.0 } else { film.grain_strength as f32 },
+            grain_strength: if print {
+                1.0
+            } else {
+                film.grain_strength as f32
+            },
             grain_tone: if print { 0.0 } else { film.grain_tone as f32 },
             unused: [0; 2],
         });
@@ -809,6 +832,7 @@ impl Gpu {
                 pass.set_bind_group(0, &bindings, &[offset]);
                 pass.dispatch_workgroups(groups[0], groups[1], groups[2]);
             }
+            self.flush(encoder);
         }
         Ok(result)
     }

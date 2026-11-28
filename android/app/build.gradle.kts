@@ -1,21 +1,22 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
     namespace = "dev.grainlegit.editor"
-    compileSdk = 36
-    buildToolsVersion = "36.0.0"
+    compileSdk {
+        version = release(37) { minorApiLevel = 1 }
+    }
+    buildToolsVersion = "37.0.0"
     ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "dev.grainlegit.editor"
         minSdk = 36
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.13"
+        versionCode = 14
+        versionName = "0.14"
         ndk.abiFilters.add("arm64-v8a")
     }
 
@@ -43,12 +44,15 @@ android.compileOptions {
 }
 
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2025.10.00"))
-    implementation("androidx.activity:activity-compose:1.11.0")
+    implementation(platform("androidx.compose:compose-bom:2026.11.01"))
+    implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.exifinterface:exifinterface:1.4.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // Liquid glass refraction for the floating editor controls (AGSL, Android 13+).
+    implementation("io.github.kyant0:backdrop:2.0.1")
+    implementation("io.github.kyant0:shapes:1.2.1")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("com.google.ai.edge.litert:litert:2.4.0")
     implementation("com.google.ai.edge.litert:litert-gpu:2.4.0")
     implementation("com.google.ai.edge.litert:litert-npu-runtime-qualcomm:2.4.0")
