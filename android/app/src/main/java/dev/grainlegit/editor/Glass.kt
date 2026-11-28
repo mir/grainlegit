@@ -1,6 +1,26 @@
 package dev.grainlegit.editor
 
 import androidx.compose.animation.core.Animatable
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -62,23 +82,148 @@ import kotlin.math.roundToInt
 internal val LocalGlassBackdrop = staticCompositionLocalOf<Backdrop> { emptyBackdrop() }
 
 // Dark enough that white labels stay readable over bright photos.
-private val glassTint = Color(0xFF121212).copy(alpha = 0.42f)
+internal val glassTint = Color(0xFF121212).copy(alpha = 0.42f)
 
-// A frosted panel with refracting edges. Content is clipped to the panel shape.
+// A frosted surface with refracting edges. Content is clipped to [shape]. Small controls pass a
+// shallower [lensHeight] so the refraction stays at their rim.
 @Composable
-internal fun Modifier.glassPanel(cornerRadius: Dp = 26.dp): Modifier {
+internal fun Modifier.glass(
+    shape: Shape, tint: Color = glassTint, blurRadius: Dp = 12.dp, lensHeight: Dp = 16.dp, lensAmount: Dp = 28.dp,
+): Modifier {
     val backdrop = LocalGlassBackdrop.current
-    val shape = remember(cornerRadius) { RoundedRectangle(cornerRadius) }
     return drawBackdrop(
         backdrop = backdrop,
         shape = { shape },
         effects = {
             vibrancy()
-            blur(12.dp.toPx())
-            lens(16.dp.toPx(), 28.dp.toPx())
+            blur(blurRadius.toPx())
+            lens(lensHeight.toPx(), lensAmount.toPx())
         },
-        onDrawSurface = { drawRect(glassTint) },
+        onDrawSurface = { drawRect(tint) },
     ).clip(shape)
+}
+
+// A frosted panel with refracting edges. Content is clipped to the panel shape.
+@Composable
+internal fun Modifier.glassPanel(cornerRadius: Dp = 26.dp): Modifier =
+    glass(remember(cornerRadius) { RoundedRectangle(cornerRadius) })
+
+// A glass capsule for top bar controls; [Modifier.glass] tuned for small shapes.
+@Composable
+internal fun Modifier.glassCapsule(tint: Color = glassTint): Modifier =
+    glass(remember { Capsule() }, tint, blurRadius = 8.dp, lensHeight = 8.dp, lensAmount = 16.dp)
+
+// Fills inside a glass surface: lines, wells and resting or selected controls.
+internal val glassDivider = Color.White.copy(alpha = 0.12f)
+internal val glassWell = Color.White.copy(alpha = 0.07f)
+internal val glassSelected = Color.White.copy(alpha = 0.2f)
+
+// The floating panel docked above the bottom edge; every tool's controls sit in one.
+@Composable
+internal fun GlassDock(
+    modifier: Modifier = Modifier, contentPadding: PaddingValues = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 8.dp).then(modifier)
+        .glassPanel().padding(contentPadding), content = content)
+}
+
+private val glassControlHeight = 40.dp
+
+// A round glass button for the top bar.
+@Composable
+internal fun GlassIconButton(
+    label: String, symbol: EditorSymbol, enabled: Boolean = true, selected: Boolean = false, action: () -> Unit,
+) {
+    Box(Modifier.minimumInteractiveComponentSize().size(glassControlHeight)
+        .glassCapsule(if (selected) glassSelectedTint else glassTint)
+        .clickable(enabled = enabled, role = Role.Button, onClick = action)
+        .semantics { contentDescription = label }, contentAlignment = Alignment.Center) {
+        Glyph(symbol, if (enabled) ink else muted.copy(alpha = 0.55f))
+    }
+}
+
+// Several glass buttons sharing one capsule, like Undo and Redo.
+@Composable
+internal fun GlassButtonGroup(content: @Composable RowScope.() -> Unit) {
+    Row(Modifier.padding(4.dp).height(glassControlHeight).glassCapsule(), verticalAlignment = Alignment.CenterVertically,
+        content = content)
+}
+
+// One button inside a [GlassButtonGroup].
+@Composable
+internal fun RowScope.GlassGroupButton(label: String, symbol: EditorSymbol, enabled: Boolean = true, action: () -> Unit) {
+    Box(Modifier.fillMaxHeight().width(46.dp).clickable(enabled = enabled, role = Role.Button, onClick = action)
+        .semantics { contentDescription = label }, contentAlignment = Alignment.Center) {
+        Glyph(symbol, if (enabled) ink else muted.copy(alpha = 0.55f))
+    }
+}
+
+// A glass capsule with a text label. A [prominent] button is frosted white, for the screen's main action.
+@Composable
+internal fun GlassButton(text: String, enabled: Boolean = true, prominent: Boolean = false, onClick: () -> Unit) {
+    val tint = if (prominent && enabled) Color.White.copy(alpha = 0.86f) else glassTint
+    val color = when {
+        !enabled -> muted.copy(alpha = 0.55f)
+        prominent -> onAccent
+        else -> ink
+    }
+    Box(Modifier.padding(4.dp).height(glassControlHeight).glassCapsule(tint)
+        .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+        .padding(horizontal = 18.dp), contentAlignment = Alignment.Center) {
+        Text(text, color = color, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+}
+
+private val glassSelectedTint = Color(0xFF5A5A5A).copy(alpha = 0.6f)
+private val scrim = Color.Black.copy(alpha = 0.35f)
+
+// A glass bottom sheet drawn in the editor's own layer, so it refracts the photo; a
+// ModalBottomSheet opens in a separate window the photo backdrop cannot reach. Drag it down, tap
+// outside or press back to dismiss.
+@Composable
+internal fun GlassSheet(title: String, dismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    val latestDismiss by rememberUpdatedState(dismiss)
+    BackHandler { latestDismiss() }
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    // Vertical offset in px: starts below the screen and springs up.
+    val offset = remember { Animatable(with(density) { 600.dp.toPx() }) }
+    val shown = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        launch { shown.animateTo(1f) }
+        offset.animateTo(0f, spring(0.85f, 400f))
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().graphicsLayer { alpha = shown.value }.background(scrim)
+            .pointerInput(Unit) { detectTapGestures { latestDismiss() } }
+            .clearAndSetSemantics {
+                contentDescription = "Close sheet"
+                onClick { latestDismiss(); true }
+            })
+        val drag = rememberDraggableState { delta ->
+            scope.launch { offset.snapTo((offset.value + delta).coerceAtLeast(0f)) }
+        }
+        GlassDock(
+            Modifier.align(Alignment.BottomCenter).heightIn(max = maxHeight * 0.8f)
+                .graphicsLayer { translationY = offset.value }
+                .draggable(drag, Orientation.Vertical, onDragStopped = { velocity ->
+                    if (offset.value > with(density) { 96.dp.toPx() } || velocity > 1500f) latestDismiss()
+                    else offset.animateTo(0f, spring(0.85f, 400f))
+                }),
+            contentPadding = PaddingValues(bottom = 8.dp),
+        ) {
+            Box(Modifier.fillMaxWidth().padding(top = 8.dp), contentAlignment = Alignment.Center) {
+                Box(Modifier.size(36.dp, 4.dp).background(muted.copy(alpha = 0.5f), CircleShape))
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                EditorAction("Close", EditorSymbol.Close, action = dismiss)
+                Text(title, color = ink, style = MaterialTheme.typography.titleMedium)
+            }
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                content = content)
+        }
+    }
 }
 
 internal data class GlassTab(val title: String, val symbol: EditorSymbol)

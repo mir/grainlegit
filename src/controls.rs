@@ -38,6 +38,14 @@ pub const MEDIA: [&str; 3] = ["direct", "paper", "film"];
 pub struct Stock {
     pub id: String,
     pub name: String,
+    /// The top of this stock's strength slider, and the strength its picker preview uses. Stocks
+    /// whose look is already strong blow out well before 4.
+    #[serde(default = "full_strength_range")]
+    pub max_strength: f64,
+}
+
+fn full_strength_range() -> f64 {
+    4.0
 }
 
 pub fn negative_stocks() -> &'static [Stock] {
@@ -201,6 +209,13 @@ mod tests {
                 "superia-xtra-400",
             ]
         );
+
+        let capped: Vec<_> = stocks
+            .iter()
+            .filter(|stock| stock.max_strength != 4.0)
+            .map(|stock| (stock.id.as_str(), stock.max_strength))
+            .collect();
+        assert_eq!(capped, [("vision3-500t", 2.0), ("portra-800", 2.0)]);
 
         let mut settings = Settings::default();
         for (index, id) in stock_ids.iter().enumerate() {

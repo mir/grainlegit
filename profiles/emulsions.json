@@ -63,6 +63,7 @@
     {
       "id": "vision3-500t",
       "name": "Kodak Vision3 500T",
+      "max_strength": 2.0,
       "fog_density": 0.15,
       "image_density_range": 1.48,
       "exposure_knee": 0.17,
@@ -95,6 +96,7 @@
     {
       "id": "portra-800",
       "name": "Kodak Portra 800",
+      "max_strength": 2.0,
       "fog_density": 0.17,
       "image_density_range": 1.55,
       "exposure_knee": 0.18,

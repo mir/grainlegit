@@ -26,7 +26,8 @@ internal enum class Tool(
     Temperature("Temperature"), Tint("Tint"), Saturation("Saturation"), Vibrance("Vibrance"),
     WhiteBalance("WB picker"), Sharpen("Sharpen", 0f, 2f),
     CameraExposure("Negative exposure", -2f, 2f, unit = " EV"),
-    // 1× is the real stock. The default 2× sits mid-slider; 4× matches the film stock previews.
+    // 1× is the real stock. Each stock sets its own maximum (4× unless its look is already strong),
+    // which the film stock previews use; the default sits mid-slider. See [Edit.rangeMax].
     StockStrength("Stock strength", 0f, 4f, 2f, 40, "×"),
     LensAperture("Aperture", lensStops.first(), lensStops.last(), lensStops.last(), lensStops.lastIndex),
     LensVignette("Vignette", -4f, 0f, -2.3f, 40, " EV"),
@@ -77,7 +78,11 @@ internal enum class Tool(
         else -> "${(value * 100).roundToInt()}%"
     }
 
-    fun rulerPosition(value: Float): Float {
+    // [top] narrows a linear slider's upper end; steps keep their size.
+    fun rulerSteps(top: Float = max): Int = if (top == max) steps else (steps * (top - min) / (max - min)).roundToInt()
+
+    fun rulerPosition(value: Float, top: Float = max): Float {
+        if (top != max) return (value.coerceIn(min, top) - min) / (top - min)
         val bounded = value.coerceIn(min, max)
         if (this == LensAperture) {
             val index = lensStops.indices.minBy { abs(lensStops[it] - bounded) }
@@ -86,7 +91,11 @@ internal enum class Tool(
         return if (logarithmic) ln(bounded / min) / ln(max / min) else (bounded - min) / (max - min)
     }
 
-    fun rulerValue(position: Float): Float {
+    fun rulerValue(position: Float, top: Float = max): Float {
+        if (top != max) {
+            val stops = rulerSteps(top)
+            return min + (top - min) * (position.coerceIn(0f, 1f) * stops).roundToInt() / stops
+        }
         val stop = (position.coerceIn(0f, 1f) * steps).roundToInt()
         if (this == LensAperture) return lensStops[stop]
         val fraction = stop.toFloat() / steps
@@ -94,13 +103,13 @@ internal enum class Tool(
     }
 }
 
-internal data class FilmStock(val id: String, val name: String)
+internal data class FilmStock(val id: String, val name: String, val maxStrength: Float = Tool.StockStrength.max)
 
 internal val filmStocks: List<FilmStock> by lazy {
     val stocks = JSONArray(NativeRenderer.filmStocks())
     listOf(FilmStock("generic", "Generic")) + List(stocks.length()) { index ->
         val stock = stocks.getJSONObject(index)
-        FilmStock(stock.getString("id"), stock.getString("name"))
+        FilmStock(stock.getString("id"), stock.getString("name"), stock.getDouble("max_strength").toFloat())
     }
 }
 internal val formatNames = listOf("Super 16", "110", "35 mm", "120 · 6×6", "4×5", "8×10")
@@ -122,13 +131,21 @@ internal data class Edit(
     private val stockIndex get() = filmStocks.indexOfFirst { it.id == stockId }.coerceAtLeast(0)
     val stock get() = filmStocks[stockIndex]
 
+    // The top of [tool]'s slider for this edit.
+    fun rangeMax(tool: Tool): Float = if (tool == Tool.StockStrength) stock.maxStrength else tool.max
+
     fun defaultValue(tool: Tool): Float {
+        if (tool == Tool.StockStrength) return tool.initial * stock.maxStrength / tool.max
         if (tool != Tool.LensGlow) return tool.initial
         val opening = (1f - log2(get(Tool.LensAperture) / Tool.LensAperture.min)).coerceIn(0f, 1f)
         return tool.initial * opening * opening
     }
 
-    operator fun get(tool: Tool): Float = values[tool] ?: defaultValue(tool)
+    operator fun get(tool: Tool): Float {
+        val value = values[tool] ?: return defaultValue(tool)
+        // A strength saved before its stock's range was capped.
+        return if (tool == Tool.StockStrength) value.coerceAtMost(stock.maxStrength) else value
+    }
 
     fun with(tool: Tool, value: Float): Edit =
         copy(values = if (value == defaultValue(tool)) values - tool else values + (tool to value))
@@ -191,7 +208,7 @@ internal data class Edit(
             .put("balance", JSONArray(balance.map(Float::toDouble)))
             .put("curves", JSONArray(curves.map { curve -> JSONArray(curve.map(Float::toDouble)) }))
             .put("geometry", geometry.encode()).put("useCoarseProfile", useCoarseProfile)
-            .put("retouches", retouches.encode()).put("stockStrengthDefault", Tool.StockStrength.initial.toDouble())
+            .put("retouches", retouches.encode()).put("stockStrengthDefault", defaultValue(Tool.StockStrength).toDouble())
             .toString()
     }
 
@@ -202,14 +219,8 @@ internal data class Edit(
             val json = JSONObject(saved)
             val values = json.getJSONObject("values")
             val curves = json.getJSONArray("curves")
-            return Edit(
-                values = Tool.entries.filter { values.has(it.name) }.associateWith { values.getDouble(it.name).toFloat() }
-                    .let { restored ->
-                        // Edits saved while the default strength was 1× omit it; keep their look.
-                        val savedDefault = json.optDouble("stockStrengthDefault", 1.0).toFloat()
-                        if (Tool.StockStrength in restored || savedDefault == Tool.StockStrength.initial) restored
-                        else restored + (Tool.StockStrength to savedDefault)
-                    },
+            val edit = Edit(
+                values = Tool.entries.filter { values.has(it.name) }.associateWith { values.getDouble(it.name).toFloat() },
                 stockId = json.getString("stock"),
                 format = json.getInt("format"),
                 medium = json.getInt("medium"),
@@ -219,6 +230,11 @@ internal data class Edit(
                 useCoarseProfile = json.optBoolean("useCoarseProfile", true),
                 retouches = Retouch.decodeAll(json.optJSONArray("retouches")),
             )
+            // Edits omit a strength left at its default. If the default has changed since (it was 1×,
+            // and stocks that cap their range now default lower), keep the saved look.
+            val savedDefault = json.optDouble("stockStrengthDefault", 1.0).toFloat()
+            return if (Tool.StockStrength in edit.values || savedDefault == edit.defaultValue(Tool.StockStrength)) edit
+            else edit.copy(values = edit.values + (Tool.StockStrength to savedDefault))
         }
     }
 }

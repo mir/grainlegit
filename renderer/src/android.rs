@@ -597,9 +597,6 @@ pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_autoGrainSize(
     })
 }
 
-/// Film stock picker thumbnails show each stock at the Stock strength slider's maximum.
-const STOCK_PREVIEW_STRENGTH: f64 = 4.0;
-
 #[no_mangle]
 pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_stockPreview(
     env: JNIEnv,
@@ -611,8 +608,14 @@ pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_stockPreview(
 ) -> jni::sys::jbyteArray {
     call(env, |env| {
         let mut edit = parse_edit(env, &edit)?;
-        // Exaggerate each stock's look so the picker thumbnails are easy to tell apart.
-        edit.film.stock_strength = STOCK_PREVIEW_STRENGTH;
+        // Show each stock at its strength slider's maximum so the picker thumbnails are easy to
+        // tell apart.
+        if let Some(stock) = (edit.film.negative_stock as usize)
+            .checked_sub(1)
+            .and_then(|index| grainlegit::negative_stocks().get(index))
+        {
+            edit.film.stock_strength = stock.max_strength;
+        }
         let pixels = with_engine(handle, |engine| {
             let gpu = &engine.gpu;
             let mut image = LockedBitmap::new(env, &bitmap)?.upload(gpu, [0, 0])?;

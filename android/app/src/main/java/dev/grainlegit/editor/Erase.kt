@@ -16,15 +16,14 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -466,8 +465,7 @@ private fun EraseWaves(state: EraseState, view: Camera, viewport: IntSize, matri
 
 @Composable
 internal fun EraseControls(state: EraseState, modelControls: @Composable () -> Unit, remove: () -> Unit) {
-    Column(Modifier.fillMaxWidth().background(panelColor).padding(horizontal = 16.dp)) {
-        HorizontalDivider(color = dividerColor)
+    GlassDock(contentPadding = PaddingValues(horizontal = 14.dp)) {
         if (state.mode != EraseMode.Select) Ruler(Tool.BrushSize, state.brush, {}, { state.brush = it }, {})
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -485,7 +483,7 @@ internal fun EraseControls(state: EraseState, modelControls: @Composable () -> U
             }
         }
         modelControls()
-        HorizontalDivider(Modifier.padding(top = 6.dp), color = dividerColor)
+        HorizontalDivider(Modifier.padding(top = 6.dp), color = glassDivider)
         Row(
             Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),

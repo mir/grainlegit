@@ -2,6 +2,7 @@ package dev.grainlegit.editor
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -33,17 +34,12 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -52,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -125,7 +122,8 @@ internal fun EditControls(
                     )
                 }
                 if (!usingStockMix) {
-                    Ruler(tool, edit[tool], start, { change(edit.with(tool, it)) }, finish, default = edit.defaultValue(tool))
+                    Ruler(tool, edit[tool], start, { change(edit.with(tool, it)) }, finish, default = edit.defaultValue(tool),
+                        top = edit.rangeMax(tool))
                 }
             }
             when (panel) {
@@ -189,7 +187,7 @@ private fun AutoGrainButton(applied: Boolean, apply: () -> Unit) {
             .semantics { contentDescription = "Auto grain" },
         contentAlignment = Alignment.Center,
     ) {
-        Box(Modifier.size(34.dp).background(if (applied) selectedColor else controlColor, RoundedCornerShape(10.dp)),
+        Box(Modifier.size(34.dp).background(if (applied) glassSelected else glassWell, RoundedCornerShape(10.dp)),
             contentAlignment = Alignment.Center) {
             Glyph(EditorSymbol.Auto, if (applied) accent else ink, Modifier.size(20.dp))
         }
@@ -222,9 +220,9 @@ internal fun EditorChip(
             Modifier.then(if (plain) Modifier.fillMaxWidth() else Modifier)
                 .then(if (value == null) Modifier.heightIn(min = 34.dp) else Modifier.widthIn(min = 61.dp))
                 .background(when {
-                    selected -> Color.White.copy(alpha = 0.2f)
+                    selected -> glassSelected
                     plain -> Color.Transparent
-                    else -> Color.White.copy(alpha = 0.07f)
+                    else -> glassWell
                 }, shape)
                 .padding(horizontal = if (plain) 4.dp else 10.dp, vertical = if (value == null) 0.dp else 4.dp),
             horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
@@ -249,7 +247,7 @@ internal fun CropControls(
         Tool.Vertical -> geometry.vertical
         else -> geometry.straighten
     }
-    Column(Modifier.fillMaxWidth().background(panelColor).padding(horizontal = 16.dp, vertical = 4.dp)) {
+    GlassDock(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)) {
         Ruler(tool, value, {}, {
             change(when (tool) {
                 Tool.Horizontal -> geometry.copy(horizontal = it)
@@ -270,7 +268,7 @@ internal fun CropControls(
             EditorChip(Tool.Vertical.title, selected = tool == Tool.Vertical,
                 value = Tool.Vertical.display(geometry.vertical)) { setTool(Tool.Vertical) }
         }
-        HorizontalDivider(color = dividerColor)
+        HorizontalDivider(color = glassDivider)
         Row(
             Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
@@ -369,14 +367,10 @@ internal fun Glyph(symbol: EditorSymbol, color: Color, modifier: Modifier = Modi
 
 @Composable
 internal fun EditorAction(
-    label: String, symbol: EditorSymbol, enabled: Boolean = true, selected: Boolean = false, filled: Boolean = false,
-    action: () -> Unit,
+    label: String, symbol: EditorSymbol, enabled: Boolean = true, selected: Boolean = false, action: () -> Unit,
 ) {
     IconButton(onClick = action, enabled = enabled, modifier = Modifier.semantics { contentDescription = label }) {
-        Box(if (filled) Modifier.size(38.dp).background(controlColor, CircleShape) else Modifier,
-            contentAlignment = Alignment.Center) {
-            Glyph(symbol, if (!enabled) muted.copy(alpha = 0.55f) else if (selected) accent else ink)
-        }
+        Glyph(symbol, if (!enabled) muted.copy(alpha = 0.55f) else if (selected) accent else ink)
     }
 }
 
@@ -404,7 +398,7 @@ internal fun CompareControl(comparing: Boolean, change: (Boolean) -> Unit) {
         },
         contentAlignment = Alignment.Center,
     ) {
-        Box(Modifier.size(38.dp).background(if (comparing) selectedColor else controlColor, CircleShape),
+        Box(Modifier.size(40.dp).glassCapsule(if (comparing) Color.White.copy(alpha = 0.3f) else glassTint),
             contentAlignment = Alignment.Center) {
             Glyph(EditorSymbol.Compare, ink)
         }
@@ -414,7 +408,7 @@ internal fun CompareControl(comparing: Boolean, change: (Boolean) -> Unit) {
 @Composable
 internal fun Ruler(
     tool: Tool, amount: Float, start: () -> Unit, change: (Float) -> Unit, finish: () -> Unit,
-    label: String = tool.title, default: Float = tool.initial,
+    label: String = tool.title, default: Float = tool.initial, top: Float = tool.max,
 ) {
     val latestChange by rememberUpdatedState(change)
     val latestStart by rememberUpdatedState(start)
@@ -443,21 +437,21 @@ internal fun Ruler(
             progressBarRangeInfo = if (aperture) {
                 stateDescription = tool.display(amount)
                 ProgressBarRangeInfo(tool.rulerPosition(amount), 0f..1f, tool.steps - 1)
-            } else ProgressBarRangeInfo(amount, tool.min..tool.max, tool.steps - 1)
+            } else ProgressBarRangeInfo(amount, tool.min..top, tool.rulerSteps(top) - 1)
             setProgress { value ->
-                commitValue(if (aperture) tool.rulerValue(value) else value.coerceIn(tool.min, tool.max))
+                commitValue(if (aperture) tool.rulerValue(value) else value.coerceIn(tool.min, top))
                 true
             }
             customActions = listOf(CustomAccessibilityAction("Reset to default") {
                 commitValue(latestDefault)
                 true
             })
-        }.pointerInput(tool) {
+        }.pointerInput(tool, top) {
             fun fractionAt(x: Float): Float {
                 val inset = 2.dp.toPx()
                 return ((x - inset) / (size.width - 2 * inset)).coerceIn(0f, 1f)
             }
-            fun valueAt(x: Float) = tool.rulerValue(fractionAt(x))
+            fun valueAt(x: Float) = tool.rulerValue(fractionAt(x), top)
             suspend fun AwaitPointerEventScope.trackSliderGesture(down: PointerInputChange): Float? {
                 var editing = false
                 try {
@@ -518,7 +512,7 @@ internal fun Ruler(
                 drawLine(tickColor, Offset(x, center.y - half), Offset(x, center.y + half), 2.dp.toPx(), StrokeCap.Round)
             }
         }
-        val position = dragPosition ?: tool.rulerPosition(amount)
+        val position = dragPosition ?: tool.rulerPosition(amount, top)
         GlassThumb(track, (inset + (trackWidth - 2 * inset) * position) / trackWidth, { press.value }, trackWidth)
     }
 }
@@ -540,8 +534,9 @@ internal fun CurveControls(
     val colors = listOf(accent, Color(0xFFF09A99), Color(0xFFA3DAA1), Color(0xFFA2BEF5))
     val active by rememberUpdatedState(curves)
     val updateCurves by rememberUpdatedState(change)
-    Column(Modifier.fillMaxWidth().background(panelColor).padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Canvas(Modifier.fillMaxWidth().height(148.dp).background(background, RoundedCornerShape(8.dp))
+    GlassDock {
+        // A darker well keeps the curve readable over bright photos.
+        Canvas(Modifier.fillMaxWidth().height(148.dp).background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
             .semantics { contentDescription = "${channels[channel]} curve" }
             .pointerInput(channel) {
                 awaitEachGesture {
@@ -569,8 +564,8 @@ internal fun CurveControls(
             for (line in 0..4) {
                 val x = inset + width * line / 4
                 val y = inset + height * line / 4
-                drawLine(dividerColor, Offset(x, inset), Offset(x, inset + height))
-                drawLine(dividerColor, Offset(inset, y), Offset(inset + width, y))
+                drawLine(glassDivider, Offset(x, inset), Offset(x, inset + height))
+                drawLine(glassDivider, Offset(inset, y), Offset(inset + width, y))
             }
             drawLine(muted.copy(alpha = 0.55f), Offset(inset, inset + height), Offset(inset + width, inset))
             val values = curves[channel]
@@ -606,28 +601,16 @@ internal fun CurveControls(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun EditorSheet(title: String, dismiss: () -> Unit, content: @Composable () -> Unit) {
-    ModalBottomSheet(
-        onDismissRequest = dismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = panelColor, contentColor = ink,
-    ) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            EditorAction("Close", EditorSymbol.Close, action = dismiss)
-            Text(title, color = ink, style = MaterialTheme.typography.titleMedium)
-        }
-        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 22.dp)) {
-            content()
-        }
-    }
+    GlassSheet(title, dismiss) { content() }
 }
 
 @Composable
 internal fun SheetChoice(title: String, selected: Boolean, subtitle: String? = null, choose: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 3.dp).background(if (selected) selectedColor else controlColor,
-            RoundedCornerShape(12.dp)).clickable(role = Role.Button, onClick = choose).padding(12.dp),
+        Modifier.fillMaxWidth().padding(vertical = 3.dp).background(if (selected) glassSelected else glassWell,
+            RoundedCornerShape(14.dp)).clip(RoundedCornerShape(14.dp)).clickable(role = Role.Button, onClick = choose).padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {

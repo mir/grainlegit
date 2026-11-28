@@ -83,12 +83,12 @@ internal fun FilmStockSheet(
             ) {
                 items(filmStocks, key = { it.id }) { stock ->
                     val isSelected = stock.id == selected
-                    val shape = RoundedCornerShape(8.dp)
+                    val shape = RoundedCornerShape(14.dp)
                     Column(
                         Modifier.width(width).selectable(isSelected, role = Role.RadioButton) { choose(stock) },
                     ) {
                         Box(
-                            Modifier.fillMaxWidth().aspectRatio(4f / 5f).clip(shape).background(controlColor)
+                            Modifier.fillMaxWidth().aspectRatio(4f / 5f).clip(shape).background(glassWell)
                                 .then(if (isSelected) Modifier.border(2.dp, accent, shape) else Modifier),
                         ) {
                             previews[stock.id]?.let { preview ->

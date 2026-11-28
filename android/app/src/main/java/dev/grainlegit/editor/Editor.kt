@@ -39,11 +39,9 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemGestures
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -792,11 +790,10 @@ internal fun Editor() {
                             }
                             val status = photoError ?: renderError ?: shownEraseWork?.title ?: erasing?.message
                                 ?: "Opening photo…".takeIf { opening || (active == null && original != null) }
-                            if (status != null) Surface(
-                                modifier = if (shownEraseWork != null) {
+                            if (status != null) Box(
+                                (if (shownEraseWork != null) {
                                     Modifier.align(Alignment.TopCenter).padding(top = with(LocalDensity.current) { toolbarHeight.toDp() } + 12.dp)
-                                } else Modifier,
-                                color = panelColor, shape = RoundedCornerShape(12.dp),
+                                } else Modifier).glassCapsule(),
                             ) {
                                 Text(status, Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                             }
@@ -805,14 +802,14 @@ internal fun Editor() {
                                     Modifier.fillMaxWidth().padding(start = 8.dp, end = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    EditorAction(if (editingTool) "Cancel" else "Recent edits",
-                                        if (editingTool) EditorSymbol.Close else EditorSymbol.Back, enabled = !exporting, filled = true,
+                                    GlassIconButton(if (editingTool) "Cancel" else "Recent edits",
+                                        if (editingTool) EditorSymbol.Close else EditorSymbol.Back, enabled = !exporting,
                                         action = ::goBack)
                                     if (editingTool) {
                                         if (erasing != null) {
-                                            EditorAction("Undo", EditorSymbol.Undo,
+                                            GlassIconButton("Undo", EditorSymbol.Undo,
                                                 erasing.busy == null && erasing.liveStroke == null &&
-                                                    (erasing.canUndoSelection || erasing.draft.isNotEmpty()), filled = true,
+                                                    (erasing.canUndoSelection || erasing.draft.isNotEmpty()),
                                                 action = erasing::undo)
                                         }
                                         val heading = when {
@@ -822,18 +819,20 @@ internal fun Editor() {
                                             else -> "White balance"
                                         }
                                         Box(Modifier.weight(1f).padding(start = 4.dp, end = 8.dp)) {
-                                            Text(heading, Modifier.background(controlColor, CircleShape)
-                                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                                            Text(heading, Modifier.glassCapsule()
+                                                .padding(horizontal = 14.dp, vertical = 8.dp),
                                                 style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         }
                                     } else {
-                                        EditorAction("Undo", EditorSymbol.Undo, undo.isNotEmpty(), filled = true) {
-                                            redo.add(edit)
-                                            edit = undo.removeAt(undo.lastIndex)
-                                        }
-                                        EditorAction("Redo", EditorSymbol.Redo, redo.isNotEmpty(), filled = true) {
-                                            undo.add(edit)
-                                            edit = redo.removeAt(redo.lastIndex)
+                                        GlassButtonGroup {
+                                            GlassGroupButton("Undo", EditorSymbol.Undo, undo.isNotEmpty()) {
+                                                redo.add(edit)
+                                                edit = undo.removeAt(undo.lastIndex)
+                                            }
+                                            GlassGroupButton("Redo", EditorSymbol.Redo, redo.isNotEmpty()) {
+                                                undo.add(edit)
+                                                edit = redo.removeAt(redo.lastIndex)
+                                            }
                                         }
                                         Spacer(Modifier.weight(1f))
                                     }
@@ -841,10 +840,8 @@ internal fun Editor() {
                                         CompareControl(comparing) { comparing = it }
                                     }
                                     when {
-                                        exporting -> Button(onClick = { exportCancel.set(true); exportJob?.cancel() }) {
-                                            Text("Cancel export")
-                                        }
-                                        editingTool -> Button(
+                                        exporting -> GlassButton("Cancel export") { exportCancel.set(true); exportJob?.cancel() }
+                                        editingTool -> GlassButton("Apply", prominent = true,
                                             enabled = (!picking || sampled != null) && erasing?.busy == null, onClick = {
                                                 when {
                                                     erasing != null -> {
@@ -867,8 +864,10 @@ internal fun Editor() {
                                                     }
                                                 }
                                             },
-                                        ) { Text("Apply") }
-                                        else -> Button(enabled = active != null, onClick = { active?.let(::startExport) }) { Text("Save copy") }
+                                        )
+                                        else -> GlassButton("Save copy", enabled = active != null, prominent = true) {
+                                            active?.let(::startExport)
+                                        }
                                     }
                                 }
 
@@ -876,8 +875,8 @@ internal fun Editor() {
                                     LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp))
                                 } else if (exportMessage != null) {
                                     Row(
-                                        Modifier.fillMaxWidth().padding(horizontal = 12.dp)
-                                            .background(panelColor, RoundedCornerShape(12.dp)).padding(start = 12.dp, end = 4.dp),
+                                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+                                            .glassPanel(20.dp).padding(start = 16.dp, end = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         Text(exportMessage.orEmpty(), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
@@ -921,17 +920,14 @@ internal fun Editor() {
                             curves != null -> CurveControls(curves, curveChannel, { curveChannel = it }, { curveDraft = it }) {
                                 curveDraft = curves.mapIndexed { index, curve -> if (index == curveChannel) neutralCurve else curve }
                             }
-                            picking -> Row(
-                                Modifier.fillMaxWidth().background(panelColor).padding(horizontal = 16.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
+                            picking -> GlassDock { Row(Modifier.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text(if (sampled != null) "Tap another area to resample" else "Tap a neutral area in the photo",
-                                    Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                                    Modifier.weight(1f).padding(start = 4.dp), style = MaterialTheme.typography.bodySmall)
                                 if (sampled != null) {
                                     Box(Modifier.size(36.dp, 24.dp).background(sampled.color, RoundedCornerShape(6.dp)))
                                     TextButton(onClick = ::resetSample) { Text("Reset") }
                                 }
-                            }
+                            } }
                             active != null -> {
                                 val activeTool = when (tool) {
                                     Tool.Stock, Tool.Format, Tool.Medium -> panel.defaultTool
@@ -949,6 +945,39 @@ internal fun Editor() {
                                     autoGrain = autoGrain)
                             }
                         }
+                    }
+                    when (sheet) {
+                        Sheet.Stock -> {
+                            val input = original
+                            if (input != null && active != null) {
+                                FilmStockSheet(edit, active.generation, renderer, seed, loadSource = {
+                                    withContext(decodeDispatcher) { fitImage(input, active.layout, active.retouches, longEdge = 768) }
+                                }, dismiss = ::dismissSheet) { stock ->
+                                    commit(edit.withStock(stock.id))
+                                    tool = Tool.StockStrength
+                                    dismissSheet()
+                                }
+                            }
+                        }
+                        Sheet.Format -> EditorSheet("Negative format", ::dismissSheet) {
+                            Text("Smaller negatives make grain more visible.", color = muted, modifier = Modifier.padding(bottom = 8.dp))
+                            formatNames.forEachIndexed { index, name ->
+                                val width = formatWidths[index].toString().removeSuffix(".0")
+                                SheetChoice(name, edit.format == index, "$width mm wide") {
+                                    commit(edit.copy(format = index))
+                                    dismissSheet()
+                                }
+                            }
+                        }
+                        Sheet.Ratio -> EditorSheet("Aspect ratio", ::dismissSheet) {
+                            cropRatios.forEachIndexed { index, ratio ->
+                                SheetChoice(ratio, crop?.ratio == index) {
+                                    crop = crop?.copy(ratio = index)
+                                    dismissSheet()
+                                }
+                            }
+                        }
+                        null -> Unit
                     }
                 }
             }
@@ -972,39 +1001,6 @@ internal fun Editor() {
         )
     }
 
-    when (sheet) {
-        Sheet.Stock -> {
-            val input = original
-            if (input != null && active != null) {
-                FilmStockSheet(edit, active.generation, renderer, seed, loadSource = {
-                    withContext(decodeDispatcher) { fitImage(input, active.layout, active.retouches, longEdge = 768) }
-                }, dismiss = ::dismissSheet) { stock ->
-                    commit(edit.withStock(stock.id))
-                    tool = Tool.StockStrength
-                    dismissSheet()
-                }
-            }
-        }
-        Sheet.Format -> EditorSheet("Negative format", ::dismissSheet) {
-            Text("Smaller negatives make grain more visible.", color = muted, modifier = Modifier.padding(bottom = 8.dp))
-            formatNames.forEachIndexed { index, name ->
-                val width = formatWidths[index].toString().removeSuffix(".0")
-                SheetChoice(name, edit.format == index, "$width mm wide") {
-                    commit(edit.copy(format = index))
-                    dismissSheet()
-                }
-            }
-        }
-        Sheet.Ratio -> EditorSheet("Aspect ratio", ::dismissSheet) {
-            cropRatios.forEachIndexed { index, ratio ->
-                SheetChoice(ratio, crop?.ratio == index) {
-                    crop = crop?.copy(ratio = index)
-                    dismissSheet()
-                }
-            }
-        }
-        null -> Unit
-    }
 }
 
 private fun sampleBalance(bitmap: android.graphics.Bitmap, point: IntOffset): BalanceSample {
