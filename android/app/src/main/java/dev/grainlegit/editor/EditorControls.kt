@@ -58,7 +58,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 internal enum class Panel(val title: String, val defaultTool: Tool) {
-    Adjust("Adjust", Tool.Exposure), Lens("Lens", Tool.LensAperture), Negative("Grain", Tool.CameraExposure),
+    Lens("Lens", Tool.LensAperture), Negative("Grain", Tool.CameraExposure), Adjust("Adjust", Tool.Exposure),
 }
 
 // Retained for activity state saved by Android 0.2.
@@ -155,11 +155,11 @@ internal fun EditControls(
             Modifier.fillMaxWidth().padding(vertical = 5.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            EditorChip("Erase", modifier = Modifier.weight(1f), plain = true, onClick = onErase)
             Panel.entries.forEach {
                 EditorChip(it.title, selected = panel == it, modifier = Modifier.weight(1f), plain = true,
                     role = Role.Tab, onClick = { if (panel != it) setPanel(it) })
             }
-            EditorChip("Erase", modifier = Modifier.weight(1f), plain = true, onClick = onErase)
         }
     }
 }
