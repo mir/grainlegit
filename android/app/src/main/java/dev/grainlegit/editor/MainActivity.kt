@@ -10,19 +10,32 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.sp
 
-internal val background = Color(0xFF121511)
-internal val panelColor = Color(0xFF1B201A)
-internal val controlColor = Color(0xFF252B23)
-internal val selectedColor = Color(0xFF3D4A35)
-internal val dividerColor = Color(0xFF384036)
-internal val ink = Color(0xFFF2F3E9)
-internal val muted = Color(0xFFB4BDB0)
-internal val accent = Color(0xFFD8EDAB)
-internal val onAccent = Color(0xFF202A14)
+internal val background = Color(0xFF101010)
+internal val panelColor = Color(0xFF181818)
+internal val controlColor = Color(0xFF252525)
+internal val selectedColor = Color(0xFF424242)
+internal val dividerColor = Color(0xFF353535)
+internal val ink = Color(0xFFF2F2F2)
+internal val muted = Color(0xFFB1B1B1)
+internal val accent = Color.White
+internal val onAccent = Color(0xFF171717)
+private val typography = Typography().run {
+    copy(
+        headlineMedium = headlineMedium.copy(fontSize = 24.sp, lineHeight = 30.sp),
+        headlineSmall = headlineSmall.copy(fontSize = 20.sp, lineHeight = 26.sp),
+        titleMedium = titleMedium.copy(fontSize = 14.sp, lineHeight = 20.sp),
+        titleSmall = titleSmall.copy(fontSize = 13.sp, lineHeight = 18.sp),
+        bodyLarge = bodyLarge.copy(fontSize = 14.sp, lineHeight = 20.sp),
+        bodyMedium = bodyMedium.copy(fontSize = 13.sp, lineHeight = 18.sp),
+        labelLarge = labelLarge.copy(fontSize = 13.sp, lineHeight = 18.sp),
+    )
+}
 private val colors = darkColorScheme(
     background = background,
     onBackground = ink,
@@ -51,7 +64,7 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(SystemColor.TRANSPARENT),
         )
         setContent {
-            MaterialTheme(colorScheme = colors) {
+            MaterialTheme(colorScheme = colors, typography = typography) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Editor()
                 }

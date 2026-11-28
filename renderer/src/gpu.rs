@@ -172,6 +172,7 @@ impl PlateKey {
                 ..Settings::default()
             }
         } else {
+            let negative_stock = film.effective_negative_stock();
             Settings {
                 grain: film.grain,
                 grain_size: film.grain_size,
@@ -181,7 +182,12 @@ impl PlateKey {
                 negative_width: film.negative_width,
                 exposure: film.exposure,
                 development: film.development,
-                negative_stock: film.negative_stock,
+                negative_stock,
+                stock_strength: if negative_stock == 0 {
+                    1.0
+                } else {
+                    film.stock_strength
+                },
                 print_medium: u32::from(film.print_medium != 0),
                 ..Settings::default()
             }

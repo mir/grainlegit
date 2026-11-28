@@ -5,6 +5,85 @@ use crate::preview::{Frame, Photo, Presenter};
 const SEED: u64 = 457;
 
 #[test]
+fn adjustment_curve_interpolates_smoothly_without_overshoot() {
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..Default::default()
+        });
+        let adapter = instance.request_adapter(&Default::default()).await.unwrap();
+        let gpu = Gpu::new(&adapter).await.unwrap();
+        let rgba: Vec<_> = (0..=255u8).flat_map(|v| [v, v, v, 255]).collect();
+        let mut image = gpu.upload([256, 1], [0, 0], 1024, &rgba).unwrap();
+        let mut edit = Edit::default();
+        edit.film.grain = 0.0;
+        let red_knots = [0.0, 0.25, 0.875, 0.75, 1.0];
+        for (knot, red) in edit.adjust.curves.iter_mut().zip(red_knots) {
+            knot[1] = red;
+        }
+
+        let rgb = gpu
+            .read_rgb(&mut image, &edit, [256, 1], SEED, [0, 0, 256, 1], None)
+            .unwrap();
+
+        let red = |input: usize| rgb[input * 3];
+        assert_eq!(red(0), 0);
+        assert_eq!(red(255), 255);
+        assert!(red(64).abs_diff(64) <= 1);
+        assert!(red(96).abs_diff(153) <= 1); // Linear interpolation would give 144.
+        assert!(red(128).abs_diff(223) <= 1);
+        assert!(red(191).abs_diff(191) <= 1);
+        for input in 128..=191 {
+            assert!((191..=223).contains(&red(input)));
+            assert!(red(input) <= red(input - 1));
+        }
+        assert_eq!(&rgb[96 * 3 + 1..96 * 3 + 3], &[96, 96]);
+    });
+}
+
+#[test]
+fn stock_strength_blends_with_the_generic_profile() {
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..Default::default()
+        });
+        let adapter = instance.request_adapter(&Default::default()).await.unwrap();
+        let gpu = Gpu::new(&adapter).await.unwrap();
+        let rgba: Vec<_> = (0..=255u8).flat_map(|v| [v, 140, 255 - v, 255]).collect();
+        let size = [256, 1];
+        let mut image = gpu.upload(size, [0, 0], 1024, &rgba).unwrap();
+        let mut edit = Edit::default();
+        let mut render = |edit: &Edit| {
+            gpu.read_rgb(&mut image, edit, size, SEED, [0, 0, 256, 1], None)
+                .unwrap()
+        };
+
+        let generic = render(&edit);
+        edit.film.set("--negative-stock", "ultramax-400").unwrap();
+        let full = render(&edit);
+        edit.film.stock_strength = 0.5;
+        let half = render(&edit);
+        edit.film.stock_strength = 0.0;
+        assert_eq!(render(&edit), generic);
+
+        let distance_from_generic = |rgb: &[u8]| -> u32 {
+            rgb.iter()
+                .zip(&generic)
+                .map(|(current, base)| u32::from(current.abs_diff(*base)))
+                .sum()
+        };
+        assert!(distance_from_generic(&half) > 0);
+        assert!(distance_from_generic(&half) < distance_from_generic(&full));
+        edit.film.stock_strength = 1.0;
+        assert_eq!(render(&edit), full);
+        edit.film.stock_strength = 2.0;
+        let double = render(&edit);
+        assert!(distance_from_generic(&double) > distance_from_generic(&full));
+    });
+}
+
+#[test]
 fn negative_preserves_grain_across_bands_and_viewport_crops() {
     pollster::block_on(async {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -557,6 +636,9 @@ fn lens_stops_down_and_uses_one_full_frame_light_map_for_tiles() {
             (top..top + h)
                 .flat_map(|y| {
                     (left..left + w).flat_map(move |x| {
+                        if (285..309).contains(&x) && (240..258).contains(&y) {
+                            return [255, 60, 20, 255];
+                        }
                         let grey = if (180..194).contains(&x) && (126..140).contains(&y) {
                             255
                         } else if (405..411).contains(&x) && (284..291).contains(&y) {
@@ -623,7 +705,8 @@ fn lens_stops_down_and_uses_one_full_frame_light_map_for_tiles() {
         };
         let open = render(lens);
         let stopped = render(Lens {
-            aperture: 2.8,
+            aperture: 5.6,
+            glow: 0.0,
             ..lens
         });
         let neutral = render(Lens::default());
@@ -639,6 +722,18 @@ fn lens_stops_down_and_uses_one_full_frame_light_map_for_tiles() {
         assert!(pixel(&open, 814, 554)[0] < 185, "the corners should soften");
         assert_eq!(pixel(&open, width / 2, height / 2), [72; 3]);
 
+        let glow_only = |glow| Lens {
+            glow,
+            ..Default::default()
+        };
+        let subtle = render(glow_only(0.3));
+        let strong = render(glow_only(1.0));
+        let [red, green, blue] = pixel(&strong, 315, 249);
+        assert_eq!(pixel(&neutral, 315, 249), [72; 3]);
+        assert!(red > pixel(&subtle, 315, 249)[0] && pixel(&subtle, 315, 249)[0] > 82);
+        assert!(red > green + 25 && green.abs_diff(blue) <= 5);
+        assert_eq!(pixel(&strong, 360, 249), [72; 3]);
+
         let edit = Edit {
             lens: Lens {
                 haze: 0.03,
@@ -652,12 +747,17 @@ fn lens_stops_down_and_uses_one_full_frame_light_map_for_tiles() {
             .read_rgb(&mut full, &edit, size, SEED, rect, Some(&light))
             .unwrap();
         let closed = Edit {
-            lens: Lens { aperture: 5.6, ..edit.lens },
+            lens: Lens {
+                aperture: 5.6,
+                glow: 0.0,
+                ..edit.lens
+            },
             ..edit
         };
         assert_eq!(
             neutral,
-            gpu.read_rgb(&mut full, &closed, size, SEED, rect, None).unwrap()
+            gpu.read_rgb(&mut full, &closed, size, SEED, rect, None)
+                .unwrap()
         );
         assert_eq!(pixel(&expected, 407, 287), [8; 3]);
         let centre = pixel(&expected, width / 2, height / 2);

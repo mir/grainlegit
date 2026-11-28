@@ -20,7 +20,7 @@ Use Kotlin and Jetpack Compose for the editor, with Rust as the owner of render 
 
 ## 3. Build the editing interaction
 
-- Use the [FigCraft prototype](design/android-editor.figcraft) for the layout and gesture behaviour. Give the photo the full screen width. Use icons for undo, redo, export, and hold-to-compare. Keep **Fit** and **100%** within reach below the preview.
+- Give the photo the full screen width. Keep back, cancel, undo and redo on the left of the top bar, and hold-to-compare beside apply or save on the right. Let the user pinch to zoom and double-tap a slider to reset it.
 - Keep one compact ruler above the scrolling tool strip in **Adjust**, **Grain**, and **Print**. Show the active tool and its current value. A tap selects a tool. A swipe that starts on the strip scrolls the strip without changing the edit, including when the gesture ends over the ruler.
 - In **Adjust**, put Crop, tone, colour, and sharpening in one scrolling strip. Include curves with master RGB and individual colour channels and a white-balance picker that samples the photo. Sharpen the source before adding simulated grain.
 - In **Crop**, keep the grid visible and reuse the fixed ruler for straightening and horizontal and vertical perspective. Use a ratio picker for presets and free crop, with separate 90° rotation, horizontal and vertical flips, and Reset. **Constrain Crop** trims blank edges created by the geometric transform. Retain the other geometry settings when the user selects a different tool. Apply commits the crop and geometry, and Cancel returns to the prior edit.

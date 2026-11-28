@@ -1,6 +1,7 @@
 package dev.grainlegit.editor
 
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Rect
 import android.os.Handler
 import android.os.HandlerThread
@@ -35,7 +36,9 @@ internal object NativeRenderer {
         previewToSource: FloatArray?,
     )
     @JvmStatic external fun padding(edit: String, width: Int, height: Int): Int
+    @JvmStatic external fun filmStocks(): String
     @JvmStatic external fun autoGrainSize(edit: String, width: Int, height: Int): Float
+    @JvmStatic external fun stockPreview(handle: Long, bitmap: Bitmap, seed: Long, edit: String): ByteArray
     @JvmStatic external fun prepareExportLens(handle: Long, bitmap: Bitmap, edit: String)
     @JvmStatic external fun clearExportLens(handle: Long)
     @JvmStatic external fun exportTile(
@@ -160,6 +163,15 @@ internal class Renderer(private val reportError: (String?) -> Unit) : AutoClosea
 
     suspend fun prepareExportLens(bitmap: Bitmap, edit: String) = withBitmap(bitmap) {
         NativeRenderer.prepareExportLens(handle, bitmap, edit)
+    }
+
+    suspend fun stockPreview(bitmap: Bitmap, seed: Long, edit: Edit): Bitmap = withBitmap(bitmap) {
+        val rgb = NativeRenderer.stockPreview(handle, bitmap, seed, edit.nativeSettings())
+        val pixels = IntArray(bitmap.width * bitmap.height) { index ->
+            val offset = index * 3
+            Color.rgb(rgb[offset].toInt() and 255, rgb[offset + 1].toInt() and 255, rgb[offset + 2].toInt() and 255)
+        }
+        Bitmap.createBitmap(pixels, bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
     }
 
     fun clearExportLens() {

@@ -2,7 +2,7 @@
     <string name="app_name">Grainlegit</string>
     <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:windowBackground">#121511</item>
-        <item name="android:colorAccent">#D8EDAB</item>
+        <item name="android:windowBackground">#101010</item>
+        <item name="android:colorAccent">#FFFFFF</item>
     </style>
 </resources>

@@ -25,6 +25,9 @@ pub struct Settings {
     pub grain_strength: f64,
     /// Grain balance from shadows (-1, up to 2× there) to highlights (+1, up to 2× there).
     pub grain_tone: f64,
+    /// Blend from the generic negative (0) to the selected stock (1); up to 4 exaggerates the
+    /// stock's tone and colour.
+    pub stock_strength: f64,
     pub print_medium: u32,
     pub negative_stock: u32,
 }
@@ -72,6 +75,7 @@ impl Default for Settings {
             grain_colour: 1.0,
             grain_strength: 1.0,
             grain_tone: 0.0,
+            stock_strength: 1.0,
             print_medium: 0,
             negative_stock: 0,
         }
@@ -79,9 +83,17 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn effective_negative_stock(&self) -> u32 {
+        if self.stock_strength == 0.0 {
+            0
+        } else {
+            self.negative_stock
+        }
+    }
+
     pub fn bypass(&self) -> bool {
         self.grain <= 1e-6
-            && self.negative_stock == 0
+            && self.effective_negative_stock() == 0
             && self.exposure == 0.0
             && self.development == 0.0
             && self.print_medium == 0
@@ -90,6 +102,9 @@ impl Settings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if !(0.0..=4.0).contains(&self.stock_strength) {
+            return Err("Stock strength must be between 0 and 4".into());
+        }
         if self.print_medium == 0
             && (self.enlargement != 6.0
                 || self.enlarger_blur != 0.0
@@ -175,7 +190,16 @@ mod tests {
         let stock_ids: Vec<_> = stocks.iter().map(|stock| stock.id.as_str()).collect();
         assert_eq!(
             stock_ids,
-            ["portra-400", "gold-200", "ektar-100", "vision3-500t"]
+            [
+                "portra-400",
+                "gold-200",
+                "ektar-100",
+                "vision3-500t",
+                "portra-160",
+                "portra-800",
+                "ultramax-400",
+                "superia-xtra-400",
+            ]
         );
 
         let mut settings = Settings::default();
@@ -183,5 +207,19 @@ mod tests {
             settings.set("--negative-stock", id).unwrap();
             assert_eq!(settings.negative_stock, index as u32 + 1);
         }
+    }
+
+    #[test]
+    fn stock_strength_defaults_to_full_in_saved_edits() {
+        let mut settings: Settings =
+            serde_json::from_str(r#"{"negative_stock":1,"grain":0}"#).unwrap();
+        assert_eq!(settings.stock_strength, 1.0);
+        assert!(!settings.bypass());
+        settings.stock_strength = 0.0;
+        assert!(settings.bypass());
+        settings.stock_strength = 4.0;
+        assert!(settings.validate().is_ok());
+        settings.stock_strength = 4.01;
+        assert!(settings.validate().is_err());
     }
 }

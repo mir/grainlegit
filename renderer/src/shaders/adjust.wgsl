@@ -21,10 +21,23 @@ fn linear_to_srgb(v: vec3<f32>) -> vec3<f32> {
         v * 12.92, v <= vec3(0.0031308));
 }
 
+// Match curveTangents in EditorControls.kt. Limit each slope to avoid overshooting the knots.
+fn curve_tangent(before: f32, after: f32) -> f32 {
+    return max(0.0, min(before, after)) + min(0.0, max(before, after));
+}
+
 fn curve(input: f32, channel: u32) -> f32 {
     let x = 4.0 * clamp(input, 0.0, 1.0);
     let index = min(u32(x), 3u);
-    return mix(adjust.curves[index][channel], adjust.curves[index + 1u][channel], x - f32(index));
+    let a = adjust.curves[index][channel];
+    let b = adjust.curves[index + 1u][channel];
+    let delta = b - a;
+    let before = a - adjust.curves[max(index, 1u) - 1u][channel];
+    let after = adjust.curves[min(index + 2u, 4u)][channel] - b;
+    let start = select(curve_tangent(before, delta), delta, index == 0u);
+    let end = select(curve_tangent(delta, after), delta, index == 3u);
+    let t = x - f32(index);
+    return mix(a, b, t) + t * (1.0 - t) * mix(start - delta, delta - end, t);
 }
 
 @compute @workgroup_size(8, 8)

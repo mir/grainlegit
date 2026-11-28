@@ -23,8 +23,9 @@ impl Edit {
     }
 }
 
+/// Corner blur radius at full Softness, in pixels of the frame.
 pub fn softness_radius([width, height]: [u32; 2]) -> f32 {
-    0.0022 * (width as f32).hypot(height as f32)
+    0.012 * (width as f32).hypot(height as f32)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -81,9 +82,9 @@ impl Lens {
         let residual = 1.0 - stops / 4.0;
         LensEffects {
             vignette: self.vignette.clamp(-4.0, 0.0) * residual,
-            glow: self.glow.clamp(0.0, 1.0) * wide_open.powi(2),
+            glow: self.glow.clamp(0.0, 1.0),
             haze: self.haze.clamp(0.0, 0.12) * residual.powi(2),
-            softness: self.softness.clamp(0.0, 1.0) * wide_open,
+            softness: self.softness.clamp(0.0, 1.0) * residual,
             warmth: self.warmth.clamp(-1.0, 1.0) * residual,
             saturation: self.saturation.clamp(-1.0, 1.0) * residual,
             ghosts: self.ghosts.clamp(0.0, 1.0) * wide_open,

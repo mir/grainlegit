@@ -15,7 +15,7 @@ struct Profiles {
     film: Material,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 struct Material {
     image_density_range: f64,
     #[serde(default)]
@@ -45,17 +45,60 @@ static PROFILES: LazyLock<Profiles> = LazyLock::new(|| {
         .expect("bundled emulsion profiles")
 });
 
-fn material(settings: &Settings, print: bool) -> &Material {
+fn material(settings: &Settings, print: bool) -> Material {
     if print {
-        if settings.print_medium == 1 {
-            &PROFILES.paper
+        return if settings.print_medium == 1 {
+            PROFILES.paper
         } else {
-            &PROFILES.film
-        }
-    } else if settings.negative_stock == 0 {
-        &PROFILES.negative
-    } else {
-        &PROFILES.negative_stocks[settings.negative_stock as usize - 1]
+            PROFILES.film
+        };
+    }
+    let generic = PROFILES.negative;
+    let index = settings.effective_negative_stock();
+    if index == 0 {
+        return generic;
+    }
+    let stock = PROFILES.negative_stocks[index as usize - 1];
+    if settings.stock_strength == 1.0 {
+        return stock;
+    }
+
+    // Strengths above 1 (up to 4) exaggerate the stock's
+    // tone and colour. Grain clouds stay at the real stock: extrapolated cloud fractions and dye
+    // loads would leave their valid ranges.
+    let strength = settings.stock_strength;
+    let blend_by = |strength: f64, base: f64, target: f64| base + (target - base) * strength;
+    let blend = |base: f64, target: f64| blend_by(strength, base, target);
+    let blend_triplet = |base: [f64; 3], target: [f64; 3]| {
+        std::array::from_fn(|index| blend(base[index], target[index]).max(0.0))
+    };
+    let grain_strength = strength.min(1.0);
+    Material {
+        fog_density: blend(generic.fog_density, stock.fog_density).max(0.0),
+        image_density_range: blend(generic.image_density_range, stock.image_density_range)
+            .max(0.1),
+        exposure_knee: blend(generic.exposure_knee, stock.exposure_knee).max(0.0),
+        shoulder_range: blend(generic.shoulder_range, stock.shoulder_range).max(0.05),
+        saturation: blend(generic.saturation, stock.saturation).max(0.0),
+        exposure_balance_ev: std::array::from_fn(|index| {
+            blend(generic.exposure_balance_ev[index], stock.exposure_balance_ev[index])
+        }),
+        development_sensitivity: blend_triplet(
+            generic.development_sensitivity,
+            stock.development_sensitivity,
+        ),
+        layers: std::array::from_fn(|layer| {
+            std::array::from_fn(|cloud| {
+                std::array::from_fn(|index| {
+                    blend_by(
+                        grain_strength,
+                        generic.layers[layer][cloud][index],
+                        stock.layers[layer][cloud][index],
+                    )
+                })
+            })
+        }),
+        ..generic
     }
 }
 
@@ -203,7 +246,7 @@ impl Emulsion {
             let densities: Vec<_> = (0..tones)
                 .map(|tone| {
                     let signal = tone as f64 / (tones - 1) as f64;
-                    f64::from(target_density(profile, signal, gain, slope, print) as f32)
+                    f64::from(target_density(&profile, signal, gain, slope, print) as f32)
                 })
                 .collect();
             for (population, &[size, peak, fraction]) in clouds.iter().enumerate() {

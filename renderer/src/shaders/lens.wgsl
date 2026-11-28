@@ -54,7 +54,11 @@ fn bloom(uv: vec2<f32>, step: vec2<f32>, extract: bool) -> vec3<f32> {
     var sum = vec3(0.0);
     for (var i = 0; i < 9; i++) {
         var colour = textureSampleLevel(input, linear_sampler, uv + f32(i - 4) * step, 0.0).rgb;
-        if extract { colour *= smoothstep(0.48, 0.95, dot(colour, LUMA)); }
+        if extract {
+            // Pick up saturated highlights while keeping the source hue in the halo.
+            let peak = max(colour.r, max(colour.g, colour.b));
+            colour *= smoothstep(0.48, 0.95, peak);
+        }
         sum += colour * taps[i];
     }
     return sum;
@@ -65,7 +69,7 @@ fn blur(at: vec2<u32>, axis: vec2<f32>, extract: bool) {
     if any(at >= size) { return; }
     let dimensions = vec2<f32>(size);
     let uv = (vec2<f32>(at) + 0.5) / dimensions;
-    let step = axis * (0.006 * length(dimensions)) / dimensions;
+    let step = axis * (0.008 * length(dimensions)) / dimensions;
     textureStore(light, vec2<i32>(at), vec4(bloom(uv, step, extract), 1.0));
 }
 
@@ -116,15 +120,34 @@ fn find_highlight(@builtin(local_invocation_index) lane: u32) {
     }
 }
 
-fn softened(point: vec2<f32>, size: vec2<f32>, colour: vec3<f32>) -> vec3<f32> {
-    let uv = point / size;
-    let offset = lens.softness_radius / size;
-    let x = vec2(offset.x, 0.0);
-    let y = vec2(0.0, offset.y);
-    let cross = sample_source(uv + x) + sample_source(uv - x) + sample_source(uv + y) + sample_source(uv - y);
-    let corners = sample_source(uv + x + y) + sample_source(uv + x - y)
-        + sample_source(uv - x + y) + sample_source(uv - x - y);
-    return 0.25 * colour + 0.125 * cross + 0.0625 * corners;
+const SOFTNESS_TAPS = 32u;
+const GOLDEN_ANGLE = 2.39996323;
+
+fn frame_hash(p: vec2<u32>) -> f32 {
+    var h = p.x * 0x8da6b343u ^ p.y * 0xd8163841u;
+    h = (h ^ (h >> 16u)) * 0x7feb352du;
+    h = (h ^ (h >> 15u)) * 0x846ca68bu;
+    return f32(h ^ (h >> 16u)) / 4294967296.0;
+}
+
+// Disc blur of the given radius in pixels, sampled along a golden-angle spiral. The spiral turns
+// by a per-pixel angle keyed to the frame position, so sparse taps read as noise rather than
+// doubled edges; the film grain rendered afterwards hides that noise. Taps load whole texels, so
+// export tiles match the full frame exactly.
+fn softened(texel: vec2<i32>, frame_pixel: vec2<u32>, size: vec2<i32>, radius: f32, colour: vec3<f32>) -> vec3<f32> {
+    let turn = 6.28318531 * frame_hash(frame_pixel);
+    var sum = colour;
+    var weight = 1.0;
+    for (var i = 0u; i < SOFTNESS_TAPS; i++) {
+        let t = (f32(i) + 0.5) / f32(SOFTNESS_TAPS);
+        let angle = turn + f32(i) * GOLDEN_ANGLE;
+        let offset = vec2<i32>(round(radius * sqrt(t) * vec2(cos(angle), sin(angle))));
+        let at = clamp(texel + offset, vec2(0), size - 1);
+        let w = 1.0 - 0.6 * t;
+        sum += w * to_linear(textureLoad(input, at, 0).rgb);
+        weight += w;
+    }
+    return sum / weight;
 }
 
 fn ghost_disc(point: vec2<f32>, center: vec2<f32>, radius: f32) -> f32 {
@@ -144,9 +167,10 @@ fn apply_lens(@builtin(global_invocation_id) at: vec3<u32>) {
     let radius = 2.0 * length(position);
     var colour = to_linear(textureLoad(input, vec2<i32>(at.xy), 0).rgb);
 
-    let softness = lens.softness * smoothstep(0.60, 1.0, radius);
-    if softness > 0.0 {
-        colour = mix(colour, softened(pixel, vec2<f32>(size), colour), softness);
+    // The blur radius grows from the middle of the frame out to its full size at the corners.
+    let blur = lens.softness_radius * lens.softness * smoothstep(0.30, 1.0, radius);
+    if blur > 0.35 {
+        colour = softened(vec2<i32>(at.xy), lens.origin + at.xy, vec2<i32>(size), blur, colour);
     }
 
     let warmth = lens.warmth * mix(1.0, -0.55, smoothstep(0.12, 1.0, radius));

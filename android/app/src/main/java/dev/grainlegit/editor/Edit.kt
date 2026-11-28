@@ -5,6 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.ln
+import kotlin.math.log2
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
@@ -25,6 +26,8 @@ internal enum class Tool(
     Temperature("Temperature"), Tint("Tint"), Saturation("Saturation"), Vibrance("Vibrance"),
     WhiteBalance("WB picker"), Sharpen("Sharpen", 0f, 2f),
     CameraExposure("Negative exposure", -2f, 2f, unit = " EV"),
+    // 1× is the real stock. The default 2× sits mid-slider; 4× matches the film stock previews.
+    StockStrength("Stock strength", 0f, 4f, 2f, 40, "×"),
     LensAperture("Aperture", lensStops.first(), lensStops.last(), lensStops.last(), lensStops.lastIndex),
     LensVignette("Vignette", -4f, 0f, -2.3f, 40, " EV"),
     LensGlow("Glow", 0f, 1f, 0.30f, 100),
@@ -91,8 +94,15 @@ internal enum class Tool(
     }
 }
 
-internal val stockIds = listOf("generic", "portra-400", "gold-200", "ektar-100", "vision3-500t")
-internal val stockNames = listOf("Generic", "Portra 400", "Gold 200", "Ektar 100", "Vision3 500T")
+internal data class FilmStock(val id: String, val name: String)
+
+internal val filmStocks: List<FilmStock> by lazy {
+    val stocks = JSONArray(NativeRenderer.filmStocks())
+    listOf(FilmStock("generic", "Generic")) + List(stocks.length()) { index ->
+        val stock = stocks.getJSONObject(index)
+        FilmStock(stock.getString("id"), stock.getString("name"))
+    }
+}
 internal val formatNames = listOf("Super 16", "110", "35 mm", "120 · 6×6", "4×5", "8×10")
 internal val formatWidths = listOf(12.5f, 17f, 36f, 56f, 120f, 245f)
 internal val printMedia = listOf("Direct scan", "Paper", "Print film")
@@ -109,15 +119,28 @@ internal data class Edit(
     val useCoarseProfile: Boolean = true,
     val retouches: List<Retouch> = emptyList(),
 ) {
-    operator fun get(tool: Tool) = values[tool] ?: tool.initial
+    private val stockIndex get() = filmStocks.indexOfFirst { it.id == stockId }.coerceAtLeast(0)
+    val stock get() = filmStocks[stockIndex]
+
+    fun defaultValue(tool: Tool): Float {
+        if (tool != Tool.LensGlow) return tool.initial
+        val opening = (1f - log2(get(Tool.LensAperture) / Tool.LensAperture.min)).coerceIn(0f, 1f)
+        return tool.initial * opening * opening
+    }
+
+    operator fun get(tool: Tool): Float = values[tool] ?: defaultValue(tool)
 
     fun with(tool: Tool, value: Float): Edit =
-        copy(values = if (value == tool.initial) values - tool else values + (tool to value))
+        copy(values = if (value == defaultValue(tool)) values - tool else values + (tool to value))
+
+    fun withStock(id: String): Edit =
+        if (id == stock.id) this else copy(stockId = id, values = values - Tool.StockStrength)
 
     fun nativeSettings(): String {
         fun vector(vararg tools: Tool) = JSONArray(tools.map { get(it).toDouble() })
         val film = JSONObject()
-            .put("negative_stock", stockIds.indexOf(stockId).coerceAtLeast(0))
+            .put("negative_stock", stockIndex)
+            .put("stock_strength", get(Tool.StockStrength).toDouble())
             .put("negative_width", formatWidths[format].toDouble())
             .put("exposure", get(Tool.CameraExposure).toDouble())
             .put("grain", get(Tool.Grain).toDouble())
@@ -146,7 +169,7 @@ internal data class Edit(
             .put("balance", JSONArray((balance + 1f).map(Float::toDouble)))
             .put("curves", JSONArray(List(5) { point -> JSONArray(curves.map { it[point].toDouble() }) }))
         val edit = JSONObject().put("film", film).put("adjust", adjust)
-        if (get(Tool.LensAperture) < Tool.LensAperture.max) {
+        if (get(Tool.LensAperture) < Tool.LensAperture.max || get(Tool.LensGlow) > 0f) {
             edit.put("lens", JSONObject()
                 .put("aperture", get(Tool.LensAperture).toDouble())
                 .put("vignette", get(Tool.LensVignette).toDouble())
@@ -168,7 +191,8 @@ internal data class Edit(
             .put("balance", JSONArray(balance.map(Float::toDouble)))
             .put("curves", JSONArray(curves.map { curve -> JSONArray(curve.map(Float::toDouble)) }))
             .put("geometry", geometry.encode()).put("useCoarseProfile", useCoarseProfile)
-            .put("retouches", retouches.encode()).toString()
+            .put("retouches", retouches.encode()).put("stockStrengthDefault", Tool.StockStrength.initial.toDouble())
+            .toString()
     }
 
     companion object {
@@ -179,7 +203,13 @@ internal data class Edit(
             val values = json.getJSONObject("values")
             val curves = json.getJSONArray("curves")
             return Edit(
-                values = Tool.entries.filter { values.has(it.name) }.associateWith { values.getDouble(it.name).toFloat() },
+                values = Tool.entries.filter { values.has(it.name) }.associateWith { values.getDouble(it.name).toFloat() }
+                    .let { restored ->
+                        // Edits saved while the default strength was 1× omit it; keep their look.
+                        val savedDefault = json.optDouble("stockStrengthDefault", 1.0).toFloat()
+                        if (Tool.StockStrength in restored || savedDefault == Tool.StockStrength.initial) restored
+                        else restored + (Tool.StockStrength to savedDefault)
+                    },
                 stockId = json.getString("stock"),
                 format = json.getInt("format"),
                 medium = json.getInt("medium"),

@@ -468,13 +468,14 @@ private fun EraseWaves(state: EraseState, view: Camera, viewport: IntSize, matri
 internal fun EraseControls(state: EraseState, modelControls: @Composable () -> Unit, remove: () -> Unit) {
     Column(Modifier.fillMaxWidth().background(panelColor).padding(horizontal = 16.dp)) {
         HorizontalDivider(color = dividerColor)
-        if (state.mode != EraseMode.Select) Ruler(Tool.BrushSize, state.brush, true, {}, { state.brush = it }, {})
+        if (state.mode != EraseMode.Select) Ruler(Tool.BrushSize, state.brush, {}, { state.brush = it }, {})
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
         ) {
             EraseMode.entries.forEach { mode ->
-                EditorChip(mode.title, selected = state.mode == mode) { state.mode = mode }
+                val value = Tool.BrushSize.display(state.brush).takeIf { mode != EraseMode.Select }
+                EditorChip(mode.title, selected = state.mode == mode, value = value) { state.mode = mode }
             }
             // Temporary controls for comparing the refinement stages on the last removal.
             state.stages?.let { last ->
@@ -490,8 +491,6 @@ internal fun EraseControls(state: EraseState, modelControls: @Composable () -> U
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             val idle = state.busy == null && state.liveStroke == null
-            EditorAction("Undo", EditorSymbol.Undo, idle &&
-                (state.canUndoSelection || state.draft.isNotEmpty())) { state.undo() }
             TextButton(enabled = idle && state.hasSelection, onClick = {
                 state.selection.checkpoint()
                 state.selection.clear()

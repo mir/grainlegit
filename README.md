@@ -1,6 +1,6 @@
 # Grainlegit
 
-<img src="design/icon/icon-512.png" width="96" alt="Grainlegit app icon: grainlegit in cream serif type on grainy olive">
+<img src="docs/readme/icon-512.png" width="96" alt="Grainlegit app icon: grainlegit in cream serif type on grainy olive">
 
 Grainlegit is an on-device Android photo editor with an aperture-controlled lens look, film grain formed from simulated dye clouds, and AI object removal.
 
@@ -8,7 +8,7 @@ Grainlegit is an on-device Android photo editor with an aperture-controlled lens
 
 ## Lens
 
-Open **Lens** and drag **Aperture** from **f/5.6**, where the lens effect is off, toward **f/1.4** for the full 35/1.4 Double-Asph look. At **f/2.8**, the vignette is about half as strong and the glow and corner softness have faded out.
+Open **Lens** and drag **Aperture** from **f/5.6** toward **f/1.4** for the full lens preset. At **f/2.8**, the vignette and corner softness are about half as strong and the preset glow has faded out.
 
 <p align="center">
   <img src="docs/readme/lens-f56.webp" width="32%" alt="Railway landscape in Grainlegit's Lens tab at f/5.6 with the lens effect off">
@@ -18,13 +18,13 @@ Open **Lens** and drag **Aperture** from **f/5.6**, where the lens effect is off
   <sub>The same photo at f/5.6, f/2.8 and f/1.4. Captured on a Xiaomi 17 Ultra.</sub>
 </p>
 
-Swipe the Lens controls to tune **Vignette**, **Glow**, **Haze**, **Softness**, **Edge warmth**, and **Edge saturation**. **Ghosts** starts at zero. Turn it up to add flare opposite the brightest highlight. Lens effects scale with the photo frame and render before the film negative, so grain stays sharp even where the lens softens the image.
+Swipe the Lens controls to tune **Vignette**, **Glow**, **Haze**, **Softness**, **Edge warmth**, and **Edge saturation**. **Glow** adds soft halos around bright areas in the colour of the light source. Adjust it at any aperture, or double-tap its slider to restore the aperture preset. **Ghosts** starts at zero. Turn it up to add flare opposite the brightest highlight. Lens effects scale with the photo frame and render before the film negative, so grain stays sharp even where the lens softens the image.
 
 ## Film grain
 
 Choose a negative stock and frame size. The GPU turns each pixel into density on a simulated negative, forms grain from dye clouds in each colour layer, and scans the result in real time. Denser areas get more clouds, so grain texture varies with tone and colour.
 
-- **Stocks are calibrated against published data.** Each stock has fine and coarse cloud sizes, dye loads, a tone curve and a colour balance for every layer. For example, Gold 200's blue-sensitive layer measures about 2.4× the granularity of Ektar 100's, and the render keeps that difference. [Calibration sources and method](profiles/grain-calibration.md)
+- **Each stock has its own grain, tone, and colour.** The presets use scan measurements or published grain data, with estimates for the parts the data doesn’t cover. For example, Gold 200's blue-sensitive layer measures about 2.4× the granularity of Ektar 100's, and the render keeps that difference. [Calibration sources and method](profiles/grain-calibration.md)
 - **Format sets the grain size.** Clouds are sized in micrometres on the negative, not in pixels. A 6000-pixel photo on 35 mm spreads 36 mm of film across those pixels, so each pixel covers 6 µm. Choosing Super 16 squeezes the same photo onto 12.5 mm and the grain grows about 3×. Choosing 120 makes it about 1.6× finer.
 - **Preview and export share the same render pipeline.** Each photo keeps its grain seed. The 100% preview and the full-resolution JPEG use the same lens and grain shaders, with the export rendered in padded tiles.
 
@@ -35,13 +35,13 @@ Choose a negative stock and frame size. The GPU turns each pixel into density on
   <sub>Crops shown at 200% from the car photo upscaled to 4800 × 6000 and rendered with the reference renderer. Top row: the source, then Portra 400 on Super 16, 35 mm and 120. Bottom row: four stocks on 35 mm.</sub>
 </p>
 
-### What the Grain controls do
+### What the Film controls do
 
 Take Portra 400 on 35 mm. Each control changes one physical property of the negative.
 
 | Control | What it changes on the negative | What you see |
 | --- | --- | --- |
-| **Stock** | Cloud sizes, dye per cloud, tone curve and colour balance for each layer | Ektar is fine-grained and saturated; Gold 200 has strong grain in its blue layer |
+| **Stock** | Cloud sizes, dye per cloud, tone curve and colour balance for each layer | Swipe through previews of your photo to choose a stock. Previews show each stock at 4× so they are easy to tell apart. Its strength slider runs from Generic at 0× through the real stock at 1× to 4×; it starts at 2×. Above 1× only tone and colour grow. |
 | **Format** | Width of film the photo is spread across, from Super 16 to 8×10 | Smaller formats show larger grain |
 | **Exposure** | Exposure of the negative before it is scanned | Moves tones along the stock's curve. |
 | **Amount** | Clouds are larger and each carries more dye, with fewer of them for the same density | Stronger grain without changing tone |
@@ -66,15 +66,15 @@ Take Portra 400 on 35 mm. Each control changes one physical property of the nega
 | Area | In the Android app |
 | --- | --- |
 | Recent edits | Open JPEG and HEIF photos through the Android photo picker. Reopen recent photos with their saved settings and grain seeds. |
-| Preview | **Fit**, **100%**, pinch and pan, hold-to-compare, undo and redo. The controls float over the photo. |
-| Adjust | Crop, exposure, tone, curves, white balance, colour and sharpening. Curves and white balance preview changes before **Apply**. |
+| Preview | Pinch and pan to zoom and frame the photo. Back, undo, redo, compare, and **Save copy** float over the top of the preview. Hold compare to see the original. |
+| Adjust | Crop, exposure, tone, smooth curves, white balance, colour and sharpening. Current values appear above their control names. Double-tap a slider to reset it. Use **Cancel** or **Apply** in the top bar when editing crop, curves or white balance. |
 | Crop | Corner handles, aspect ratios, straightening, perspective, rotation, flips and **Constrain**. |
-| Lens | Aperture and individual controls for the built-in 35/1.4 Double-Asph look. |
+| Lens | Aperture and individual controls for the built-in lens effect. |
 | Grain | Stock, format, Auto and the controls above. |
 | Erase | Tap objects or paint an area, then choose **Remove** and **Apply**. |
-| Export | **Save copy** saves a full-resolution JPEG, with progress and cancellation. |
+| Export | **Save copy** in the top bar starts a full-resolution JPEG export. Progress and **Cancel export** appear at the top. |
 
-The [implementation plan](PLAN.md) covers the renderer design, preview scheduling, tiled export and performance targets. The [FigCraft prototype](design/android-editor.figcraft) holds the original editor design.
+The [implementation plan](PLAN.md) covers the renderer design, preview scheduling, tiled export and performance targets.
 
 ## Repository layout
 
@@ -100,9 +100,9 @@ scripts/android devices   # check that adb sees the phone
 scripts/android run       # build, install, and launch
 ```
 
-The first device target is the Xiaomi 17 Ultra. Enable USB debugging, connect the phone, and accept its debugging prompt. Open a photo, tap **100%** for a source-pixel crop, and hold the half-circle button to see the original. Use **Fit** to return to the full frame.
+The first device target is the Xiaomi 17 Ultra. Enable USB debugging, connect the phone, and accept its debugging prompt. Open a photo and pinch out for a source-pixel crop or pinch in to see the full frame. Hold the compare icon next to **Save copy** to see the original.
 
-The app keeps the original intact and saves recent edits and their seeds locally. Tap the export arrow, then **Save copy**, to save a JPEG to `Pictures/Grainlegit`. The exporter decodes and renders padded tiles and stages RGB rows in the app cache before encoding. Allow approximately three bytes of temporary disk space per output pixel, plus space for the JPEG. Cancelled exports remove their temporary files and any unpublished MediaStore entry.
+The app keeps the original intact and saves recent edits and their seeds locally. Tap **Save copy** to save a JPEG to `Pictures/Grainlegit`. The exporter decodes and renders padded tiles and stages RGB rows in the app cache before encoding. Allow approximately three bytes of temporary disk space per output pixel, plus space for the JPEG. Cancelled exports remove their temporary files and any unpublished MediaStore entry.
 
 ### SAM 3.1 on SM8850
 

@@ -2,7 +2,7 @@ use crate::edit::Edit;
 use crate::gpu::Gpu;
 use crate::preview::{Frame, Photo, Presenter};
 use jni::objects::{JClass, JFloatArray, JObject, JString};
-use jni::sys::{jboolean, jfloat, jint, jlong, jobject};
+use jni::sys::{jboolean, jfloat, jint, jlong, jobject, jstring};
 use jni::JNIEnv;
 use raw_window_handle::{AndroidDisplayHandle, AndroidNdkWindowHandle};
 use std::ffi::c_void;
@@ -533,6 +533,20 @@ fn parse_edit(env: &JNIEnv, edit: &JString) -> Result<Edit, String> {
 }
 
 #[no_mangle]
+pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_filmStocks(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    call(env, |env| {
+        let stocks = serde_json::to_string(grainlegit::negative_stocks())
+            .map_err(|error| error.to_string())?;
+        env.new_string(stocks)
+            .map(|result| result.into_raw())
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[no_mangle]
 pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_padding(
     env: JNIEnv,
     _class: JClass,
@@ -563,6 +577,47 @@ pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_autoGrainSize(
             return Err("Invalid photo size".into());
         }
         Ok(crate::emulsion::auto_grain_size(width as u32, height as u32, &edit.film) as jfloat)
+    })
+}
+
+/// Film stock picker thumbnails show each stock at the Stock strength slider's maximum.
+const STOCK_PREVIEW_STRENGTH: f64 = 4.0;
+
+#[no_mangle]
+pub extern "system" fn Java_dev_grainlegit_editor_NativeRenderer_stockPreview(
+    env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    bitmap: JObject,
+    seed: jlong,
+    edit: JString,
+) -> jni::sys::jbyteArray {
+    call(env, |env| {
+        let mut edit = parse_edit(env, &edit)?;
+        // Exaggerate each stock's look so the picker thumbnails are easy to tell apart.
+        edit.film.stock_strength = STOCK_PREVIEW_STRENGTH;
+        let pixels = with_engine(handle, |engine| {
+            let gpu = &engine.gpu;
+            let mut image = LockedBitmap::new(env, &bitmap)?.upload(gpu, [0, 0])?;
+            let size = [image.extent.width, image.extent.height];
+            let light = edit.lens.effects().needs_light().then(|| {
+                let mut encoder = gpu.device.create_command_encoder(&Default::default());
+                let light = gpu.prepare_lens_light(&mut encoder, &image, &edit.adjust);
+                gpu.queue.submit([encoder.finish()]);
+                light
+            });
+            gpu.read_rgb(
+                &mut image,
+                &edit,
+                size,
+                seed as u64,
+                [0, 0, size[0], size[1]],
+                light.as_ref(),
+            )
+        })?;
+        env.byte_array_from_slice(&pixels)
+            .map(|result| result.into_raw())
+            .map_err(|error| error.to_string())
     })
 }
 

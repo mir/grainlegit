@@ -86,8 +86,10 @@ internal fun ContentResolver.photoTitle(uri: Uri): String = runCatching {
 @Composable
 internal fun RecentEdits(entries: List<RecentEdit>, openPhoto: () -> Unit, resume: (RecentEdit) -> Unit) {
     Column(Modifier.fillMaxSize()) {
-        Text("Grainlegit", Modifier.padding(start = 22.dp, top = 14.dp, bottom = 12.dp),
-            style = MaterialTheme.typography.headlineMedium)
+        Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Grainlegit", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium)
+            Button(onClick = openPhoto) { Text("Open photo") }
+        }
         LazyColumn(
             Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -114,8 +116,6 @@ internal fun RecentEdits(entries: List<RecentEdit>, openPhoto: () -> Unit, resum
                 }
             }
         }
-        Button(onClick = openPhoto, modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 8.dp),
-            shape = RoundedCornerShape(14.dp)) { Text("Open photo") }
     }
 }
 
@@ -123,8 +123,8 @@ internal fun RecentEdits(entries: List<RecentEdit>, openPhoto: () -> Unit, resum
 private fun RecentCaption(entry: RecentEdit, modifier: Modifier) {
     Column(modifier) {
         Text(entry.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-        val stock = stockNames[stockIds.indexOf(entry.edit.stockId).coerceAtLeast(0)]
-        Text("$stock  ·  ${formatNames[entry.edit.format]}", color = muted, style = MaterialTheme.typography.bodySmall)
+        Text("${entry.edit.stock.name}  ·  ${formatNames[entry.edit.format]}", color = muted,
+            style = MaterialTheme.typography.bodySmall)
     }
 }
 
